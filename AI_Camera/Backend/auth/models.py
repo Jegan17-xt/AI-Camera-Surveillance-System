@@ -53,6 +53,16 @@ class User(Base):
     # Users" is built on, replacing the old single-login-per-company model.
     parent_admin_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
 
+    # Server-side session revocation (Phase 2 security hardening). Bumped
+    # whenever a stolen/old session cookie must stop working immediately —
+    # password changed/reset, account disabled, or an explicit "log out of
+    # all other sessions" — without waiting for the cookie's own 7-day
+    # PERMANENT_SESSION_LIFETIME to expire. The session cookie carries the
+    # version it was issued with (see auth.auth.get_current_user); any
+    # mismatch against this column means that cookie is stale and is
+    # treated as logged out. See auth.database.bump_session_version.
+    session_version = Column(Integer, nullable=False, default=1)
+
     # Camera Limit / Camera Quota Management. One column, two hierarchy
     # levels, reused rather than duplicated (see api/camera_quota.py):
     #   - On a Company Admin's own row: the Super Admin's cap on that
@@ -101,6 +111,20 @@ class ActivityLog(Base):
     action = Column(String(120), nullable=False)
     details = Column(Text, nullable=True)
     created_at = Column(String(30), nullable=False)
+    # Phase 2 security audit trail — additive columns on the SAME table
+    # every existing log_activity() call site already writes to, rather
+    # than a parallel table. All nullable so every pre-existing row (and
+    # every existing log_activity() caller that doesn't pass these) stays
+    # valid untouched — see auth.database.log_activity's new optional
+    # kwargs and log_security_event. Never populated with a secret,
+    # token, password, RTSP URL, or biometric value — see
+    # error_logging.sanitize_sensitive_url, used wherever a `details`
+    # value could conceivably contain one.
+    target_type = Column(String(40), nullable=True)  # e.g. "user" | "camera" | "registered_person"
+    target_id = Column(Integer, nullable=True)
+    success = Column(Integer, nullable=False, default=1)  # 1 = success, 0 = failure/denied
+    ip_address = Column(String(64), nullable=True)
+    company_id = Column(Integer, nullable=True)  # tenant id (get_tenant_id) when applicable
 
 
 class Camera(Base):

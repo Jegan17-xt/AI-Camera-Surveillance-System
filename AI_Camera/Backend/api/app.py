@@ -1,12 +1,16 @@
 import os
+import re
 import sys
+import uuid
 from datetime import timedelta
 
-from flask import Flask, request
+from flask import Flask, g, jsonify, request, session
 from flask_cors import CORS
 
 from api.routes import api
-from auth.database import init_db, get_or_create_secret_key
+from auth.database import init_db, get_or_create_secret_key, log_security_event, get_user_by_id
+from auth.csrf import validate_csrf, set_csrf_cookie, SAFE_METHODS as CSRF_SAFE_METHODS
+from error_logging import log_exception
 from api.settings import init_settings_table
 from api.cameras import init_cameras_table
 from api.branding import init_branding_table
@@ -23,6 +27,16 @@ from reports.scheduler import start_report_scheduler
 from retention.scheduler import start_retention_scheduler
 
 app = Flask(__name__)
+
+# Production Deployment (AWS EC2): FLASK_DEBUG controls Werkzeug's debug
+# mode/auto-reloader (see app.run() below), the background-services guard,
+# and — Phase 2 — how strictly CORS/logging behave. Moved to the very top
+# so every section below (CORS included) can rely on it. Unset (or
+# anything other than "true"/"1"/"yes") means production-safe by default:
+# no interactive debugger, no reloader, strict CORS. Never enable this on
+# a server reachable from the open internet — the Werkzeug debugger
+# allows arbitrary code execution to anyone who can reach it.
+_flask_debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 # Auth Setup
 init_db()
@@ -83,15 +97,6 @@ init_billing_tables()
 # site above. Must run after init_db(), same FOREIGN-KEY-references-
 # users reasoning as everything above.
 init_retention_tables()
-
-# Production Deployment (AWS EC2): FLASK_DEBUG controls both Werkzeug's
-# debug mode/auto-reloader below AND the background-services guard right
-# here — unset (or anything other than "true"/"1"/"yes") means
-# production-safe by default: no interactive debugger, no reloader.
-# Never enable this on a server reachable from the open internet — the
-# Werkzeug debugger allows arbitrary code execution to anyone who can
-# reach it. Set FLASK_DEBUG=true only for local development.
-_flask_debug = os.environ.get("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 # AI Detection Engine — starts every enabled camera's own background
 # worker (camera/detection_service.py) the moment the backend process
@@ -170,20 +175,255 @@ app.config.update(
 )
 
 # Enable React Access (credentials required so the session cookie is sent).
-# Vite picks the next free port (5173, 5174, ...) when one is already in
-# use, so both are whitelisted here — never "*", since supports_credentials
-# requires an explicit origin per the CORS spec.
-CORS(
-    app,
-    supports_credentials=True,
-    origins=[
+# Phase 2 — production CORS: origins now come from CORS_ALLOWED_ORIGINS
+# (comma-separated) instead of a hardcoded dev-only list, so a production
+# deploy must explicitly configure its real frontend origin(s) rather than
+# silently trusting whatever localhost ports Vite happened to pick.
+_cors_env_origins = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+if "*" in _cors_env_origins:
+    # Never valid together with supports_credentials=True — browsers
+    # themselves refuse a wildcard Access-Control-Allow-Origin whenever
+    # credentials are involved, and honoring it here would defeat the
+    # whole point of scoping this to specific trusted origins.
+    print(
+        "[app.py] CRITICAL: CORS_ALLOWED_ORIGINS contains '*' -- rejected. "
+        "List explicit origin(s) instead, e.g. https://app.example.com"
+    )
+    _cors_env_origins = [o for o in _cors_env_origins if o != "*"]
+
+if _cors_env_origins:
+    _cors_origins = _cors_env_origins
+elif _flask_debug:
+    # Unset in local dev: today's exact 4-origin fallback — zero behavior
+    # change for anyone not using CORS_ALLOWED_ORIGINS yet. Vite picks the
+    # next free port (5173, 5174, ...) when one is already in use, so
+    # both are whitelisted.
+    _cors_origins = [
         "http://localhost:5173", "http://127.0.0.1:5173",
         "http://localhost:5174", "http://127.0.0.1:5174",
-    ],
-)
+    ]
+else:
+    # Unset in production (FLASK_DEBUG off): fail CLOSED, never wildcard.
+    # Same-origin/server-to-server calls are unaffected; cross-origin
+    # BROWSER calls are simply refused until this is configured.
+    print(
+        "[app.py] CRITICAL: CORS_ALLOWED_ORIGINS is not set in production "
+        "(FLASK_DEBUG is off). No cross-origin browser request will be "
+        "allowed until it's configured -- set CORS_ALLOWED_ORIGINS to your "
+        "real frontend origin(s), e.g. https://app.example.com"
+    )
+    _cors_origins = []
+
+CORS(app, supports_credentials=True, origins=_cors_origins)
+
+
+def _validate_production_config():
+    """Production configuration hardening (Phase 2, §14) — a single,
+    loud, startup-time check. Only WARNS (never raises/crashes the
+    process over a config problem) so a misconfigured but otherwise
+    working deployment still starts and is fixable from its own logs,
+    but nothing here silently proceeds without being flagged. No secret
+    VALUE is ever printed, only whether one is present. No-ops entirely
+    in local dev (FLASK_DEBUG on) — none of this is relevant there."""
+
+    if _flask_debug:
+        return
+
+    warnings = []
+
+    if not os.environ.get("DB_PASSWORD") and not os.environ.get("DATABASE_URL"):
+        warnings.append("DB_PASSWORD (or DATABASE_URL) is not set — database connections will likely fail.")
+
+    if not _cors_origins:
+        # Already loudly warned above at the point of the actual decision;
+        # repeated here so this single function is a complete "production
+        # readiness" summary on its own.
+        warnings.append("CORS_ALLOWED_ORIGINS is not configured — no cross-origin browser request is allowed.")
+
+    if not _session_cookie_secure:
+        warnings.append(
+            "SESSION_COOKIE_SECURE is not set — if this app is served over HTTPS (it should be, in "
+            "production), set SESSION_COOKIE_SECURE=true so the session/CSRF cookies are never sent "
+            "over a plain http:// connection."
+        )
+
+    if not warnings:
+        print("[app.py] Production config check: OK.")
+        return
+
+    print("=" * 70)
+    print("[app.py] PRODUCTION CONFIGURATION WARNINGS:")
+    for warning in warnings:
+        print(f"  - {warning}")
+    print("=" * 70)
+
+
+_validate_production_config()
 
 # Register Routes
 app.register_blueprint(api)
+
+
+# --- Phase 2: request ID, JSON body size cap, CSRF -----------------------
+
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+# A plain JSON POST/PUT/PATCH (login, settings, camera CRUD, ...) never
+# legitimately needs anywhere near this much — MAX_CONTENT_LENGTH (100MB,
+# set above) stays the real ceiling for the actual multipart file-upload
+# routes (avatar/logo/registered-person images), which are a different
+# content type and are therefore untouched by this check.
+JSON_BODY_MAX_BYTES = 1 * 1024 * 1024
+
+# Emergency ops kill switch ONLY — never used to special-case a single
+# endpoint (every endpoint goes through the same check above). Defaults
+# on; exists so a bad rollout interaction can be turned off from
+# environment config alone, without a code deploy, while it's diagnosed.
+_csrf_protection_enabled = os.environ.get("CSRF_PROTECTION_ENABLED", "true").strip().lower() not in (
+    "0", "false", "no",
+)
+
+
+@app.before_request
+def phase2_request_guards():
+    """Runs, in order, for every request: (1) assign/validate a
+    correlation id so it's available to every log line and error response
+    for this request (see the error handler below and
+    auth.database.log_security_event), (2) reject an oversized JSON body
+    early, (3) validate the CSRF token on any authenticated,
+    state-changing request. Each step returns its own response and stops
+    here on failure; anything that passes all three reaches the normal
+    view function unchanged."""
+
+    # (1) Correlation / request ID (Phase 2, §12). A client-supplied
+    # X-Request-ID is honored only if it matches a safe, bounded pattern
+    # — otherwise (or if absent) a fresh one is generated. Never trust an
+    # unbounded/free-form client value into a log line.
+    incoming_id = request.headers.get("X-Request-ID", "")
+    g.request_id = incoming_id if _REQUEST_ID_PATTERN.match(incoming_id) else uuid.uuid4().hex
+
+    # (2) JSON body size cap (Phase 2, §9) — defense in depth alongside
+    # MAX_CONTENT_LENGTH, scoped to non-upload JSON requests only.
+    if (
+        request.method in ("POST", "PUT", "PATCH")
+        and request.content_type
+        and request.content_type.startswith("application/json")
+        and request.content_length
+        and request.content_length > JSON_BODY_MAX_BYTES
+    ):
+        return jsonify({
+            "success": False,
+            "message": "Request body too large.",
+            "request_id": g.request_id,
+        }), 413
+
+    # (3) CSRF (Phase 2, §6) — only state-changing methods, only once a
+    # session actually exists (an unauthenticated request, including
+    # /login itself, has nothing to forge yet). See auth/csrf.py for the
+    # full design and the legacy-session grace case handled below.
+    if _csrf_protection_enabled and request.method not in CSRF_SAFE_METHODS and session.get("user_id"):
+        ok, needs_cookie_refresh, fresh_token = validate_csrf(session, request.headers)
+
+        if not ok:
+            log_security_event(
+                "CSRF Validation Failed",
+                user=get_user_by_id(session.get("user_id")),
+                target_type="request",
+                success=False,
+                details=f"{request.method} {request.path}",
+            )
+            return jsonify({
+                "success": False,
+                "message": "Your session could not be verified. Please refresh the page and try again.",
+                "request_id": g.request_id,
+            }), 403
+
+        if needs_cookie_refresh:
+            g.csrf_token_to_set = fresh_token
+
+    return None
+
+
+@app.after_request
+def apply_security_headers(response):
+    """Security headers (Phase 2, §5) applied to every response. This API
+    only ever returns JSON or a downloaded file — never HTML/inline
+    scripts — so a strict `default-src 'none'` CSP is safe here (see
+    api/app.py's module docstring / the Phase 2 report for the separate
+    CSP the React SPA itself needs wherever it's actually served, since
+    this Flask app never serves that HTML — verified: no static_folder /
+    send_from_directory pointing at the frontend build anywhere in this
+    codebase)."""
+
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+
+    # HSTS only when HTTPS is already confirmed terminated in front of
+    # this app (same _session_cookie_secure signal SESSION_COOKIE_SECURE
+    # uses below) — sending it over plain local HTTP dev would tell the
+    # browser to refuse http:// entirely for this host, which is correct
+    # in production and wrong on a laptop.
+    if _session_cookie_secure:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    if getattr(g, "request_id", None):
+        response.headers["X-Request-ID"] = g.request_id
+
+    if getattr(g, "csrf_token_to_set", None):
+        set_csrf_cookie(response, g.csrf_token_to_set)
+
+    return response
+
+
+@app.errorhandler(404)
+def handle_not_found(_error):
+    return jsonify({
+        "success": False,
+        "message": "Not found.",
+        "request_id": getattr(g, "request_id", None),
+    }), 404
+
+
+@app.errorhandler(413)
+def handle_too_large(_error):
+    return jsonify({
+        "success": False,
+        "message": "Request too large.",
+        "request_id": getattr(g, "request_id", None),
+    }), 413
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(error):
+    """Error response standardization (Phase 2, §11). Every OTHER error
+    response in this codebase is an existing, hand-written
+    `jsonify({"success": False, "message": ...}), 4xx` — those already
+    carry a safe, specific message and are untouched by this handler,
+    which only ever fires for something genuinely UNHANDLED. Full detail
+    (with URL/password/RTSP credentials already sanitized — see
+    error_logging.sanitize_sensitive_url) goes to the server log only;
+    the client gets a generic message plus the request id to correlate
+    against that log line, never a traceback/SQL error/filesystem path."""
+
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(error, HTTPException):
+        # A route-level abort()/HTTPException with its own status code —
+        # let Flask's normal handling return it as-is rather than
+        # flattening every 4xx into this generic 500-shaped body.
+        return error
+
+    log_exception(error, context=f"{request.method} {request.path}")
+
+    return jsonify({
+        "success": False,
+        "message": "An unexpected error occurred. Please try again.",
+        "request_id": getattr(g, "request_id", None),
+    }), 500
 
 
 @app.after_request

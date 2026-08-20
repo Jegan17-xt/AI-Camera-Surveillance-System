@@ -2,7 +2,7 @@ import os
 
 from cryptography.fernet import Fernet
 
-from auth.database import AUTH_FOLDER
+from auth.database import AUTH_FOLDER, restrict_file_permissions
 
 # Kept in its own file, separate from auth/secret.key (the Flask session
 # signing key) — rotating/losing the session secret must never also
@@ -31,6 +31,7 @@ def _get_fernet():
         key = Fernet.generate_key()
         with open(CAMERA_SECRET_FILE, "wb") as f:
             f.write(key)
+        restrict_file_permissions(CAMERA_SECRET_FILE)
 
     _fernet = Fernet(key)
 

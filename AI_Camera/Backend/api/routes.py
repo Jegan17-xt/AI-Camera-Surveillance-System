@@ -91,11 +91,13 @@ from auth.auth import (
 )
 from auth.database import (
     log_activity,
+    log_security_event,
     get_activity_logs,
     get_user_by_id,
     delete_activity_log,
     delete_activity_logs,
     delete_all_activity_logs,
+    bump_session_version,
     ROLE_SUPER_ADMIN,
     ROLE_COMPANY_ADMIN,
     ROLE_USER,
@@ -106,8 +108,10 @@ from auth.rate_limit import (
     record_successful_login,
     is_camera_test_blocked,
     record_camera_test_attempt,
+    rate_limited,
 )
 from error_logging import sanitize_sensitive_url
+from auth.csrf import issue_csrf_token, set_csrf_cookie, clear_csrf_cookie
 from api.notifications import (
     get_notifications,
     get_unread_count,
@@ -257,6 +261,7 @@ def login():
 
     blocked, retry_after = is_login_blocked(client_ip, email)
     if blocked:
+        log_security_event("Login Blocked (Rate Limited)", success=False, details=email)
         return jsonify({
             "success": False,
             "message": f"Too many failed login attempts. Try again in {retry_after} seconds.",
@@ -266,17 +271,23 @@ def login():
 
     if not user:
         record_failed_login(client_ip, email)
+        log_security_event("Login Failed", success=False, details=email)
         return jsonify({"success": False, "message": "Invalid email or password."}), 401
 
     record_successful_login(client_ip, email)
 
     session.clear()
     session["user_id"] = user["id"]
+    session["session_version"] = user["session_version"]
+    csrf_token = issue_csrf_token()
+    session["csrf_token"] = csrf_token
     session.permanent = remember
 
-    log_activity(user["name"], "Login", user_id=user["id"])
+    log_security_event("Login", user=user)
 
-    return jsonify({"success": True, "user": serialize_user(user)})
+    response = jsonify({"success": True, "user": serialize_user(user)})
+    set_csrf_cookie(response, csrf_token)
+    return response
 
 
 @api.route("/logout", methods=["POST"])
@@ -285,11 +296,13 @@ def logout():
     user = get_current_user()
 
     if user:
-        log_activity(user["name"], "Logout", user_id=user["id"])
+        log_security_event("Logout", user=user)
 
     session.clear()
 
-    return jsonify({"success": True, "message": "Logged out successfully."})
+    response = jsonify({"success": True, "message": "Logged out successfully."})
+    clear_csrf_cookie(response)
+    return response
 
 
 @api.route("/me", methods=["GET"])
@@ -524,19 +537,24 @@ def registered_create():
         raw_owner = request.form.get("owner_user_id")
         owner_user_id = None if raw_owner in (None, "", "null") else int(raw_owner)
 
-    # --- Temporary debug logging (Critical Issue Investigation) ---
-    print(f"[DEBUG][registered_create] REQUEST customer={tenant_id} name={name!r} images={len(images)}")
-
     person, error = add_registered_person(tenant_id, name, employee_id, images, owner_user_id=owner_user_id)
 
     if error:
-        print(f"[DEBUG][registered_create] FAILED customer={tenant_id} name={name!r} error={error!r}")
+        # Sanitized operational log (Phase 2): customer/error-category
+        # only — no person name, no image data. Replaces this route's
+        # earlier "[DEBUG][registered_create]" prints, which logged the
+        # person's name next to the customer id on every request.
+        print(f"[registered_create] FAILED customer={tenant_id} error_category={error!r}")
         return jsonify({"success": False, "message": error}), 400
 
-    print(f"[DEBUG][registered_create] MySQL INSERT committed customer={tenant_id} person_id={person['id']}")
-
     reload_database(tenant_id)
-    print(f"[DEBUG][registered_create] Cache reloaded customer={tenant_id}")
+
+    log_security_event(
+        "Person Registered",
+        user=current_user,
+        target_type="registered_person",
+        target_id=person["id"],
+    )
 
     return jsonify({"success": True, "person": person}), 201
 
@@ -618,6 +636,15 @@ def registered_update(person_name):
 
     reload_database(get_tenant_id(current_user))
 
+    log_security_event(
+        "Person Face Data Updated",
+        user=current_user,
+        target_type="registered_person",
+        target_id=person["id"],
+        details=person_name,
+        company_id=get_tenant_id(current_user),
+    )
+
     return jsonify({"success": True, "person": person})
 
 
@@ -635,6 +662,14 @@ def delete_registered(person_name):
         return jsonify({"success": False, "message": "Person not found."}), 404
 
     reload_database(get_tenant_id(current_user))
+
+    log_security_event(
+        "Person Face Data Deleted",
+        user=current_user,
+        target_type="registered_person",
+        details=person_name,
+        company_id=get_tenant_id(current_user),
+    )
 
     return jsonify({"success": True, "message": f"{person_name} deleted successfully."})
 
@@ -1040,7 +1075,10 @@ def users_create():
         return jsonify({"success": False, "message": error}), 400
 
     current_user = get_current_user()
-    log_activity(current_user["name"], "Customer Created", details=user["email"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "Customer Created", details=user["email"], user_id=current_user["id"],
+        target_type="user", target_id=user["id"],
+    )
 
     return jsonify({"success": True, "user": user}), 201
 
@@ -1077,7 +1115,10 @@ def users_update(user_id):
         status_code = 404 if error == "User not found." else 400
         return jsonify({"success": False, "message": error}), status_code
 
-    log_activity(current_user["name"], "Customer Updated", details=user["email"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "Customer Updated", details=user["email"], user_id=current_user["id"],
+        target_type="user", target_id=user_id,
+    )
 
     return jsonify({"success": True, "user": user})
 
@@ -1100,6 +1141,7 @@ def users_delete(user_id):
         "Customer Deleted",
         details=target["email"] if target else str(user_id),
         user_id=current_user["id"],
+        target_type="user", target_id=user_id,
     )
 
     return jsonify({"success": True, "message": "User deleted successfully."})
@@ -1123,6 +1165,7 @@ def users_set_status(user_id):
         "Customer Enabled" if user["status"] == "Active" else "Customer Disabled",
         details=user["email"],
         user_id=current_user["id"],
+        target_type="user", target_id=user_id,
     )
 
     return jsonify({"success": True, "user": user})
@@ -1130,6 +1173,7 @@ def users_set_status(user_id):
 
 @api.route("/users/<int:user_id>/reset-password", methods=["PUT"])
 @super_admin_required
+@rate_limited("password_reset", max_attempts=10, window_seconds=15 * 60)
 def users_reset_password(user_id):
 
     data = request.get_json(silent=True) or {}
@@ -1147,6 +1191,7 @@ def users_reset_password(user_id):
         "Customer Password Changed",
         details=target["email"] if target else str(user_id),
         user_id=current_user["id"],
+        target_type="user", target_id=user_id,
     )
 
     return jsonify({"success": True, "message": "Password reset successfully."})
@@ -1210,7 +1255,10 @@ def users_update_permissions(user_id):
         return jsonify({"success": False, "message": error}), status_code
 
     current_user = get_current_user()
-    log_activity(current_user["name"], "Customer Permissions Updated", details=result["email"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "Customer Permissions Updated", details=result["email"], user_id=current_user["id"],
+        target_type="user", target_id=user_id,
+    )
 
     return jsonify({"success": True, **result})
 
@@ -1261,7 +1309,10 @@ def cameras_create(customer_id):
         return jsonify({"success": False, "message": error}), 400
 
     current_user = get_current_user()
-    log_activity(current_user["name"], "Camera Added", details=camera["camera_name"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "Camera Added", details=camera["camera_name"], user_id=current_user["id"],
+        target_type="camera", target_id=camera["camera_id"], company_id=customer_id,
+    )
 
     return jsonify({"success": True, "camera": camera}), 201
 
@@ -1299,7 +1350,10 @@ def cameras_update(customer_id, camera_id):
         return jsonify({"success": False, "message": error}), status_code
 
     current_user = get_current_user()
-    log_activity(current_user["name"], "Camera Updated", details=camera["camera_name"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "Camera Updated", details=camera["camera_name"], user_id=current_user["id"],
+        target_type="camera", target_id=camera_id, company_id=customer_id,
+    )
 
     return jsonify({"success": True, "camera": camera})
 
@@ -1365,6 +1419,15 @@ def cameras_test_connection(customer_id):
     # already credential-sanitized.
     print(f"[CAMERA_TEST] customer={customer_id} connected={connected} reason={sanitize_sensitive_url(reason)}")
 
+    log_security_event(
+        "Camera Connection Test",
+        user=current_user,
+        target_type="camera",
+        target_id=camera_id,
+        success=connected,
+        company_id=customer_id,
+    )
+
     if camera_id:
         record_connection_test_result(camera_id, customer_id, connected)
 
@@ -1392,6 +1455,7 @@ def cameras_delete(customer_id, camera_id):
         "Camera Deleted",
         details=camera["camera_name"] if camera else str(camera_id),
         user_id=current_user["id"],
+        target_type="camera", target_id=camera_id, company_id=customer_id,
     )
 
     return jsonify({"success": True, "message": "Camera deleted successfully."})
@@ -1418,6 +1482,7 @@ def cameras_set_detection(customer_id, camera_id):
         "Camera Detection Enabled" if enabled else "Camera Detection Disabled",
         details=camera["camera_name"],
         user_id=current_user["id"],
+        target_type="camera", target_id=camera_id, company_id=customer_id,
     )
 
     return jsonify({"success": True, "camera": camera})
@@ -1933,6 +1998,7 @@ def serve_avatar(filename):
 # ==============================
 @api.route("/account/password", methods=["PUT"])
 @login_required
+@rate_limited("password_change", max_attempts=5, window_seconds=15 * 60)
 def change_password():
 
     data = request.get_json(silent=True) or {}
@@ -1946,9 +2012,44 @@ def change_password():
     if not success:
         return jsonify({"success": False, "message": error}), 400
 
-    log_activity(current_user["name"], f"{current_user['role']} Password Changed", user_id=current_user["id"])
+    # Session revocation: change_own_password() -> reset_user_password()
+    # already bumped this account's session_version (see auth/database.py),
+    # which would otherwise log the caller themselves out on their very
+    # next request. Re-syncing their OWN current session to the new value
+    # here means only every OTHER session/device is invalidated.
+    refreshed = get_user_by_id(current_user["id"])
+    session["session_version"] = refreshed["session_version"]
+
+    log_security_event(
+        f"{current_user['role']} Password Changed",
+        user=current_user,
+        target_type="user",
+        target_id=current_user["id"],
+    )
 
     return jsonify({"success": True, "message": "Password updated successfully."})
+
+
+@api.route("/account/sessions/revoke-all", methods=["POST"])
+@login_required
+def revoke_other_sessions():
+    """Session revocation (Phase 2): "Log out of all other devices" —
+    invalidates every session for this account except the one making this
+    request. See auth.database.bump_session_version."""
+
+    current_user = get_current_user()
+
+    new_version = bump_session_version(current_user["id"])
+    session["session_version"] = new_version
+
+    log_security_event(
+        f"{current_user['role']} Revoked Other Sessions",
+        user=current_user,
+        target_type="user",
+        target_id=current_user["id"],
+    )
+
+    return jsonify({"success": True, "message": "All other sessions have been signed out."})
 
 
 # ==============================
@@ -2482,7 +2583,10 @@ def company_users_create():
     if error:
         return jsonify({"success": False, "message": error}), 400
 
-    log_activity(current_user["name"], "User Created", details=user["email"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "User Created", details=user["email"], user_id=current_user["id"],
+        target_type="user", target_id=user["id"], company_id=get_tenant_id(current_user),
+    )
 
     return jsonify({"success": True, "user": user}), 201
 
@@ -2512,7 +2616,10 @@ def company_users_update(user_id):
         status_code = 404 if error == "User not found." else 400
         return jsonify({"success": False, "message": error}), status_code
 
-    log_activity(current_user["name"], "User Updated", details=user["email"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "User Updated", details=user["email"], user_id=current_user["id"],
+        target_type="user", target_id=user_id, company_id=get_tenant_id(current_user),
+    )
 
     return jsonify({"success": True, "user": user})
 
@@ -2539,6 +2646,7 @@ def company_users_delete(user_id):
         "User Deleted",
         details=target["email"] if target else str(user_id),
         user_id=current_user["id"],
+        target_type="user", target_id=user_id, company_id=get_tenant_id(current_user),
     )
 
     return jsonify({"success": True, "message": "User deleted successfully."})
@@ -2567,6 +2675,7 @@ def company_users_set_status(user_id):
         "User Enabled" if user["status"] == "Active" else "User Disabled",
         details=user["email"],
         user_id=current_user["id"],
+        target_type="user", target_id=user_id, company_id=get_tenant_id(current_user),
     )
 
     return jsonify({"success": True, "user": user})
@@ -2575,6 +2684,7 @@ def company_users_set_status(user_id):
 @api.route("/company/users/<int:user_id>/reset-password", methods=["PUT"])
 @company_or_user_required
 @module_required("user_management")
+@rate_limited("password_reset", max_attempts=10, window_seconds=15 * 60)
 def company_users_reset_password(user_id):
 
     current_user = get_current_user()
@@ -2596,6 +2706,7 @@ def company_users_reset_password(user_id):
         "User Password Reset",
         details=target["email"] if target else str(user_id),
         user_id=current_user["id"],
+        target_type="user", target_id=user_id, company_id=get_tenant_id(current_user),
     )
 
     return jsonify({"success": True, "message": "Password reset successfully."})
@@ -2637,7 +2748,10 @@ def company_users_update_permissions(user_id):
         status_code = 404 if error == "User not found." else 400
         return jsonify({"success": False, "message": error}), status_code
 
-    log_activity(current_user["name"], "User Permissions Updated", details=result["email"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "User Permissions Updated", details=result["email"], user_id=current_user["id"],
+        target_type="user", target_id=user_id, company_id=get_tenant_id(current_user),
+    )
 
     return jsonify({"success": True, **result})
 
@@ -2822,6 +2936,7 @@ def company_cameras_quota():
 @api.route("/company/cameras", methods=["POST"])
 @company_or_user_required
 @module_required("camera_management")
+@rate_limited("camera_write", max_attempts=20, window_seconds=60)
 def company_cameras_create():
 
     current_user = get_current_user()
@@ -2856,7 +2971,10 @@ def company_cameras_create():
     if error:
         return jsonify({"success": False, "message": error}), 400
 
-    log_activity(current_user["name"], "Camera Added", details=camera["camera_name"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "Camera Added", details=camera["camera_name"], user_id=current_user["id"],
+        target_type="camera", target_id=camera["camera_id"], company_id=get_tenant_id(current_user),
+    )
 
     return jsonify({"success": True, "camera": camera}), 201
 
@@ -2864,6 +2982,7 @@ def company_cameras_create():
 @api.route("/company/cameras/<int:camera_id>", methods=["PUT"])
 @company_or_user_required
 @module_required("camera_management")
+@rate_limited("camera_write", max_attempts=20, window_seconds=60)
 def company_cameras_update(camera_id):
 
     current_user = get_current_user()
@@ -2904,7 +3023,10 @@ def company_cameras_update(camera_id):
         status_code = 404 if error == "Camera not found." else 400
         return jsonify({"success": False, "message": error}), status_code
 
-    log_activity(current_user["name"], "Camera Updated", details=camera["camera_name"], user_id=current_user["id"])
+    log_activity(
+        current_user["name"], "Camera Updated", details=camera["camera_name"], user_id=current_user["id"],
+        target_type="camera", target_id=camera_id, company_id=get_tenant_id(current_user),
+    )
 
     return jsonify({"success": True, "camera": camera})
 
@@ -2958,6 +3080,15 @@ def company_cameras_test_connection():
     # reasoning: raw `reason`/`rtsp_url` never leave the server.
     print(f"[CAMERA_TEST] user={current_user['id']} connected={connected} reason={sanitize_sensitive_url(reason)}")
 
+    log_security_event(
+        "Camera Connection Test",
+        user=current_user,
+        target_type="camera",
+        target_id=camera_id,
+        success=connected,
+        company_id=get_tenant_id(current_user),
+    )
+
     if camera_id:
         record_connection_test_result(
             camera_id, get_tenant_id(current_user), connected,
@@ -2992,6 +3123,7 @@ def company_cameras_delete(camera_id):
         "Camera Deleted",
         details=camera["camera_name"] if camera else str(camera_id),
         user_id=current_user["id"],
+        target_type="camera", target_id=camera_id, company_id=tenant_id,
     )
 
     return jsonify({"success": True, "message": "Camera deleted successfully."})
@@ -3023,6 +3155,7 @@ def company_cameras_set_detection(camera_id):
         "Camera Detection Enabled" if enabled else "Camera Detection Disabled",
         details=camera["camera_name"],
         user_id=current_user["id"],
+        target_type="camera", target_id=camera_id, company_id=tenant_id,
     )
 
     return jsonify({"success": True, "camera": camera})
@@ -3166,6 +3299,7 @@ def notification_settings_get():
 
 @api.route("/notifications/settings/unknown-alert", methods=["PUT"])
 @admin_required
+@rate_limited("notification_settings", max_attempts=30, window_seconds=60)
 def notification_settings_update_unknown_alert():
 
     current_user = get_current_user()
@@ -3183,6 +3317,7 @@ def notification_settings_update_unknown_alert():
 
 @api.route("/notifications/settings/daily-report", methods=["PUT"])
 @admin_required
+@rate_limited("notification_settings", max_attempts=30, window_seconds=60)
 def notification_settings_update_daily_report():
 
     current_user = get_current_user()
@@ -3312,6 +3447,7 @@ def daily_report_logs_delete(log_id):
 
 @api.route("/reports/daily-report/generate-now", methods=["POST"])
 @admin_required
+@rate_limited("report_generate", max_attempts=5, window_seconds=60)
 def daily_report_generate_now():
     """Manual trigger — used for testing (see this feature's Testing
     section: "Do not claim WhatsApp delivery is tested because the

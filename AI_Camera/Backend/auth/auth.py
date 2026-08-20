@@ -208,13 +208,46 @@ def authenticate(email, password):
 
 
 def get_current_user():
+    """Resolves the signed-in user for this request, or None if there
+    isn't one — including a session that LOOKS present but is no longer
+    valid: the account was disabled, or its session_version has been
+    bumped since this cookie was issued (password changed/reset,
+    disabled, or "log out of all other sessions" — see
+    auth.database.bump_session_version / reset_user_password /
+    update_user_status). Either case clears the cookie outright rather
+    than just returning None, so the browser stops sending a dead cookie
+    on every subsequent request.
+
+    A cookie issued before session_version existed at all carries no
+    "session_version" key (not a stale one) — that's backfilled from the
+    DB's current value here instead of being treated as a mismatch, so
+    this check never mass-logs-out sessions that were already open when
+    the feature shipped."""
 
     user_id = session.get("user_id")
 
     if not user_id:
         return None
 
-    return get_user_by_id(user_id)
+    user = get_user_by_id(user_id)
+
+    if user is None:
+        session.clear()
+        return None
+
+    if user["status"] != "Active":
+        session.clear()
+        return None
+
+    session_version = session.get("session_version")
+
+    if session_version is None:
+        session["session_version"] = user["session_version"]
+    elif session_version != user["session_version"]:
+        session.clear()
+        return None
+
+    return user
 
 
 def login_required(view_func):

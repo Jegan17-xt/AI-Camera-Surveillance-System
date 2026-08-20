@@ -12,3 +12,13 @@ onnxruntime==1.16.3
 insightface==1.0.1
 pillow==11.3.0
 reportlab==4.4.7
+# Was already an implicit dependency (api/camera_crypto.py's Fernet
+# encryption for stored camera passwords) but was never declared here —
+# pinned explicitly (Phase 2 dependency audit) so a fresh install doesn't
+# silently rely on whatever version another package happened to pull in.
+cryptography==46.0.3
+
+# Optional (Phase 2 multi-process rate limiting, auth/rate_limit_store.py):
+# only needed if REDIS_URL is set for a multi-worker/multi-instance
+# deployment. Uncomment to install:
+# redis==5.2.1

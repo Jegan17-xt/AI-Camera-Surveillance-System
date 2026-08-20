@@ -15,6 +15,7 @@ from api.attendance import delete_attendance_for_person, rename_attendance_perso
 from api.validators import validate_text_field, validate_image_upload
 from api.scope import apply_owner_scope
 from auth.database import get_users_by_parent
+from error_logging import log_exception
 
 # Base Path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -443,14 +444,11 @@ def add_registered_person(customer_id, name, employee_id, image_files, owner_use
         return None, f"At least {MIN_EMBEDDING_COUNT} high-quality face images are required for registration."
 
     selected = _select_best(candidates)
-    print(f"[DEBUG][add_registered_person] Selected {len(selected)}/{len(candidates)} candidates for {name!r}")
 
     _write_person_folder(person_folder, selected)
-    print(f"[DEBUG][add_registered_person] Image save OK -> {person_folder}")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     blob = _embeddings_blob(selected)
-    print(f"[DEBUG][add_registered_person] Embedding generation OK ({len(selected)} vectors, {len(blob)} bytes)")
     thumbnail = selected[0]["final_filename"]
 
     try:
@@ -470,9 +468,13 @@ def add_registered_person(customer_id, name, employee_id, image_files, owner_use
             session.add(row)
             session.flush()
             new_id = row.id
-        print(f"[DEBUG][add_registered_person] SQL INSERT + MySQL commit OK id={new_id}")
     except Exception as e:
-        print(f"[DEBUG][add_registered_person] SQL INSERT FAILED: {e}")
+        # Phase 2 sensitive log sanitization: this used to be a raw
+        # print(f"...{e}") — a SQL/driver exception can echo back
+        # parameter values (e.g. the row being inserted) in its message.
+        # log_exception() sanitizes and gives File/Function/Line/Reason
+        # instead of dumping the raw exception straight to stdout.
+        log_exception(e, context="add_registered_person")
         raise
 
     # Built directly instead of re-querying/re-listing every registered

@@ -2,6 +2,7 @@ import os
 import secrets
 from datetime import datetime
 
+from flask import has_request_context, request
 from sqlalchemy import select, func, text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash
@@ -82,6 +83,8 @@ def _record_seed_credential(label, email, password):
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             "Change this password after first login, then delete this file.\n\n"
         )
+
+    restrict_file_permissions(INITIAL_CREDENTIALS_FILE)
 
 # Assignable modules — one entry per Company Admin sidebar page (11
 # pages), plus the pre-existing "Registered Persons — View Only" tier
@@ -225,6 +228,44 @@ def init_db():
             conn.execute(text("ALTER TABLE users ADD COLUMN camera_limit INTEGER NULL"))
             conn.commit()
 
+        # Server-side session revocation (Phase 2) — same
+        # added-after-the-table-already-existed situation as camera_limit
+        # above. DEFAULT 1 gives every existing row a starting value; a
+        # session cookie already in the wild (issued before this column
+        # existed) has no session_version in it at all, not a stale one —
+        # auth.auth.get_current_user() backfills that case from the DB
+        # value on first use instead of treating "absent" as "stale", so
+        # this migration never mass-logs-out every existing session.
+        if "session_version" not in existing_user_columns:
+            conn.execute(text("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1"))
+            conn.commit()
+
+        # Security audit trail (Phase 2) — same added-after-the-table-
+        # already-existed situation, this time for activity_logs. All
+        # nullable/defaulted so every existing row stays valid as-is.
+        existing_activity_log_columns = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'activity_logs'"
+                )
+            )
+        }
+
+        _activity_log_migrations = {
+            "target_type": "ALTER TABLE activity_logs ADD COLUMN target_type VARCHAR(40) NULL",
+            "target_id": "ALTER TABLE activity_logs ADD COLUMN target_id INTEGER NULL",
+            "success": "ALTER TABLE activity_logs ADD COLUMN success INTEGER NOT NULL DEFAULT 1",
+            "ip_address": "ALTER TABLE activity_logs ADD COLUMN ip_address VARCHAR(64) NULL",
+            "company_id": "ALTER TABLE activity_logs ADD COLUMN company_id INTEGER NULL",
+        }
+
+        for column_name, ddl in _activity_log_migrations.items():
+            if column_name not in existing_activity_log_columns:
+                conn.execute(text(ddl))
+                conn.commit()
+
     with get_session() as session:
 
         # Idempotent: seeds any modules missing from the catalog,
@@ -325,6 +366,26 @@ def init_db():
             print("=" * 50)
 
 
+def restrict_file_permissions(path):
+    """Best-effort owner-only file permissions (Phase 2 secret hardening)
+    for a just-written secret/credential file (session secret key, camera
+    Fernet key, the one-time seed-credentials file). `chmod` has no
+    meaningful equivalent on Windows dev machines — `os.name != "nt"`
+    makes this a silent no-op there, so local Windows development is
+    completely unaffected. On Linux (the real EC2 production target)
+    this actually restricts the file to owner read/write, matching the
+    "restrictive permissions" requirement without needing any deploy-time
+    script to remember to do it."""
+
+    if os.name == "nt":
+        return
+
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass  # Never let a permissions best-effort block the app from starting.
+
+
 def get_or_create_secret_key():
     """Flask's session cookie is signed with this key. It must stay
     stable across restarts (the dev server reloader in particular),
@@ -344,6 +405,8 @@ def get_or_create_secret_key():
 
     with open(SECRET_KEY_FILE, "w") as file:
         file.write(key)
+
+    restrict_file_permissions(SECRET_KEY_FILE)
 
     return key
 
@@ -495,19 +558,68 @@ def update_user_status(user_id, status):
             return False
 
         user.status = status
+
+        # Session revocation (Phase 2): disabling an account must also
+        # kill any session already open for it — otherwise a session
+        # opened before the disable keeps working (auth.auth.
+        # get_current_user only checks status via this same row on each
+        # request, but a stale cached session pre-dating this feature
+        # would have no version at all — the bump forces every browser
+        # tab, everywhere, off on its very next request). Re-enabling
+        # doesn't need this: there is no live session to invalidate.
+        if status != "Active":
+            user.session_version = (user.session_version or 1) + 1
+
         return True
 
 
 def reset_user_password(user_id, new_password):
+    """Returns the account's new session_version on success (always >= 2,
+    so it stays truthy for every existing `if not reset_user_password(...)`
+    caller), or None if the user doesn't exist. Every password
+    change/reset in the app — self-service, Super Admin resetting a
+    Company Admin, Company Admin resetting a User — goes through this one
+    function, so bumping session_version here (Phase 2 session
+    revocation) covers all of them: any session opened with the OLD
+    password stops being accepted on its next request. See
+    auth.auth.get_current_user for the check, and routes.py's
+    change_password handler for how the acting user's OWN current session
+    is immediately re-synced afterward so they aren't logged out by their
+    own password change."""
 
     with get_session() as session:
         user = session.get(User, user_id)
 
         if user is None:
-            return False
+            return None
 
         user.password = generate_password_hash(new_password)
-        return True
+        user.session_version = (user.session_version or 1) + 1
+        session.flush()
+
+        return user.session_version
+
+
+def bump_session_version(user_id):
+    """Session revocation (Phase 2): invalidate every OTHER session open
+    for this user right now, without touching their password or status —
+    used by the self-service "Log out of all other devices" action
+    (POST /account/sessions/revoke-all). Returns the new version, or None
+    if the user doesn't exist. The caller is expected to immediately
+    write this same value back into their own current session (see
+    routes.py) so this action logs out every OTHER session while leaving
+    the one that requested it untouched."""
+
+    with get_session() as session:
+        user = session.get(User, user_id)
+
+        if user is None:
+            return None
+
+        user.session_version = (user.session_version or 1) + 1
+        session.flush()
+
+        return user.session_version
 
 
 def set_user_camera_limit(user_id, camera_limit):
@@ -564,7 +676,24 @@ def set_user_permissions(user_id, module_keys):
             session.add(UserPermission(user_id=user_id, permission_id=permission_id))
 
 
-def log_activity(user_name, action, details="", user_id=None):
+def log_activity(
+    user_name,
+    action,
+    details="",
+    user_id=None,
+    target_type=None,
+    target_id=None,
+    success=True,
+    ip_address=None,
+    company_id=None,
+):
+    """Every existing call site (Login/Logout/user & camera CRUD/
+    permission changes/...) keeps working unchanged — the Phase 2 audit
+    columns below are all optional kwargs with the same defaults the
+    table itself falls back to. See log_security_event for a thin
+    wrapper that auto-fills ip_address from the current request when
+    there's no convenient current_user (failed login, CSRF rejection,
+    rate-limit lockout)."""
 
     with get_session() as session:
         session.add(
@@ -574,8 +703,41 @@ def log_activity(user_name, action, details="", user_id=None):
                 action=action,
                 details=details,
                 created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                target_type=target_type,
+                target_id=target_id,
+                success=1 if success else 0,
+                ip_address=ip_address,
+                company_id=company_id,
             )
         )
+
+
+def log_security_event(action, user=None, target_type=None, target_id=None, success=True, details="", company_id=None):
+    """Security audit trail (Phase 2) for events that don't already have
+    a natural log_activity() call site with a guaranteed current_user —
+    failed login attempts, CSRF rejections, rate-limit lockouts, session
+    revocation. Auto-fills ip_address from the current Flask request.
+
+    NEVER pass a password, session/CSRF token, cookie, RTSP URL, or
+    biometric value in `details` — callers should route anything that
+    could contain one through error_logging.sanitize_sensitive_url first,
+    same as every other log call in this codebase."""
+
+    ip_address = None
+    if has_request_context():
+        ip_address = request.remote_addr
+
+    log_activity(
+        user["name"] if user else "Unknown",
+        action,
+        details=details,
+        user_id=user["id"] if user else None,
+        target_type=target_type,
+        target_id=target_id,
+        success=success,
+        ip_address=ip_address,
+        company_id=company_id,
+    )
 
 
 def get_activity_logs(limit=200):

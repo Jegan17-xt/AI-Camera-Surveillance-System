@@ -20,6 +20,11 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(dotenv_path=_ENV_PATH)
 
+# Phase 2 — sensitive log sanitization: verbose startup diagnostics below
+# (including anything DB-connection-related) only print in local dev
+# (FLASK_DEBUG on), never by default in production.
+_verbose_db_startup_log = os.environ.get("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
 
 def _mask(value, keep_ends=True):
     """For logging only — never log a secret in full. e.g. 'Sw0rd@Fish!' -> 'S*********!'."""
@@ -68,8 +73,9 @@ def _build_database_url():
 
     if raw_override:
         url_obj = make_url(raw_override)
-        print("[db.py] DATABASE_URL env var is SET — it overrides DB_HOST/DB_USER/DB_PASSWORD/etc entirely.")
-        print(f"[db.py] DATABASE_URL = {_mask_url(url_obj)}")
+        if _verbose_db_startup_log:
+            print("[db.py] DATABASE_URL env var is SET — it overrides DB_HOST/DB_USER/DB_PASSWORD/etc entirely.")
+            print(f"[db.py] DATABASE_URL = {_mask_url(url_obj)}")
         return url_obj
 
     host = os.environ.get("DB_HOST", "localhost")
@@ -88,16 +94,30 @@ def _build_database_url():
     )
 
 
-print(f"[db.py] .env path   : {_ENV_PATH}")
-print(f"[db.py] .env exists : {os.path.isfile(_ENV_PATH)}")
-print(f"[db.py] DB_HOST     = {os.environ.get('DB_HOST')!r}")
-print(f"[db.py] DB_PORT     = {os.environ.get('DB_PORT')!r}")
-print(f"[db.py] DB_USER     = {os.environ.get('DB_USER')!r}")
-print(f"[db.py] DB_PASSWORD = {_mask(os.environ.get('DB_PASSWORD'))!r} (len={len(os.environ.get('DB_PASSWORD') or '')})")
-print(f"[db.py] DB_NAME     = {os.environ.get('DB_NAME')!r}")
+# Security fix (Phase 2 — sensitive log sanitization): this used to print
+# _mask(DB_PASSWORD) — e.g. "S*********!" — directly at every startup.
+# That reveals the real first/last character AND exact length of a live
+# database credential to anyone who can read the process's stdout/log
+# file, which meaningfully cuts the search space for a brute-force guess.
+# A masked-but-partial value is not the same thing as "never logged" (see
+# the Phase 2 requirement) — only whether it's configured at all is ever
+# useful for startup diagnostics, so that's all this prints now. The rest
+# of this verbose block is also gated behind FLASK_DEBUG (local dev
+# diagnostics only) rather than always printing in every environment,
+# production included.
+if _verbose_db_startup_log:
+    print(f"[db.py] .env path   : {_ENV_PATH}")
+    print(f"[db.py] .env exists : {os.path.isfile(_ENV_PATH)}")
+    print(f"[db.py] DB_HOST     = {os.environ.get('DB_HOST')!r}")
+    print(f"[db.py] DB_PORT     = {os.environ.get('DB_PORT')!r}")
+    print(f"[db.py] DB_USER     = {os.environ.get('DB_USER')!r}")
+    print(f"[db.py] DB_PASSWORD = {'SET' if os.environ.get('DB_PASSWORD') else 'NOT SET'}")
+    print(f"[db.py] DB_NAME     = {os.environ.get('DB_NAME')!r}")
 
 DATABASE_URL = _build_database_url()  # always a sqlalchemy.engine.URL object, both branches
-print(f"[db.py] Final DATABASE_URL = {_mask_url(DATABASE_URL)}")
+
+if _verbose_db_startup_log:
+    print(f"[db.py] Final DATABASE_URL = {_mask_url(DATABASE_URL)}")
 
 # pool_pre_ping guards against MySQL silently dropping idle connections
 # (wait_timeout) — without it, the first query after a period of
