@@ -1,0 +1,34 @@
+# --- Secrets / keys ---
+.env
+**/auth/secret.key
+**/auth/camera_secret.key
+**/auth/users.db
+**/auth/initial_credentials.txt
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.venv/
+
+# --- Node / frontend ---
+node_modules/
+dist/
+.vite/
+
+# --- Logs / runtime data ---
+log.txt
+*.log
+
+# --- Large / generated assets ---
+*.pt
+dataset/
+attendance/
+generated_reports/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/

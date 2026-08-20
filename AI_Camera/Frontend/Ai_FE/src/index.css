@@ -1,0 +1,325 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Space Grotesk", "Inter", sans-serif;
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --color-base-950: #05070d;
+  --color-base-900: #0a0e1a;
+  --color-base-850: #0d1220;
+  --color-base-800: #10162a;
+  --color-base-700: #1a2138;
+  --color-base-600: #2a3350;
+
+  --color-accent-cyan: #22d3ee;
+  --color-accent-blue: #3b82f6;
+  --color-accent-deep: #1e3a8a;
+  --color-signal-green: #34e89e;
+  --color-signal-red: #fb4d5e;
+  --color-signal-amber: #fbbf24;
+
+  --color-ink-100: #eef2fb;
+  --color-ink-200: #d1d8e8;
+  --color-ink-300: #b4bfd6;
+  --color-ink-400: #98a4bf;
+  --color-ink-500: #7c8aa8;
+  --color-ink-600: #647191;
+  --color-ink-700: #4d597a;
+
+  /* Admin Portal — distinct "command console" theme, deliberately
+     different material/palette from the User Portal's cyan glass look. */
+  --color-admin-950: #0b0710;
+  --color-admin-900: #120b1c;
+  --color-admin-850: #170f24;
+  --color-admin-800: #1c1330;
+  --color-admin-700: #2a1d47;
+  --color-admin-600: #3d2a63;
+
+  --color-admin-accent: #a855f7;
+  --color-admin-accent-deep: #6d28d9;
+  --color-admin-gold: #f59e0b;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-base-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+}
+
+/* Ambient background: radial glow + subtle scanline grid, evokes a surveillance ops room */
+.app-shell {
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(34, 211, 238, 0.10), transparent 40%),
+    radial-gradient(circle at 88% 92%, rgba(59, 130, 246, 0.10), transparent 45%),
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.015) 0px, rgba(255, 255, 255, 0.015) 1px, transparent 1px, transparent 3px),
+    linear-gradient(180deg, #05070d 0%, #070a14 100%);
+  min-height: 100vh;
+}
+
+/* Glassmorphism surface */
+.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-strong {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.025));
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* Camera viewfinder corner brackets — the signature motif */
+.viewfinder {
+  position: relative;
+}
+.viewfinder::before,
+.viewfinder::after,
+.viewfinder .vf-tl,
+.viewfinder .vf-br {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-color: var(--color-accent-cyan);
+  opacity: 0.55;
+}
+.viewfinder::before {
+  top: 8px;
+  left: 8px;
+  border-top: 2px solid;
+  border-left: 2px solid;
+  border-radius: 3px 0 0 0;
+}
+.viewfinder::after {
+  bottom: 8px;
+  right: 8px;
+  border-bottom: 2px solid;
+  border-right: 2px solid;
+  border-radius: 0 0 3px 0;
+}
+
+/* Scanline overlay for camera previews */
+.scanline-overlay {
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(34, 211, 238, 0.06) 0px,
+    transparent 2px,
+    transparent 4px
+  );
+}
+
+.pulse-dot {
+  box-shadow: 0 0 0 0 rgba(52, 232, 158, 0.6);
+  animation: pulse-ring 2s infinite;
+}
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(52, 232, 158, 0.55); }
+  70% { box-shadow: 0 0 0 8px rgba(52, 232, 158, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 232, 158, 0); }
+}
+
+.pulse-dot-red {
+  animation: pulse-ring-red 2s infinite;
+}
+@keyframes pulse-ring-red {
+  0% { box-shadow: 0 0 0 0 rgba(251, 77, 94, 0.55); }
+  70% { box-shadow: 0 0 0 8px rgba(251, 77, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 77, 94, 0); }
+}
+
+.custom-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.35);
+}
+
+/* iOS Safari auto-zooms the whole page when a focused form control's
+   effective font-size is below 16px — and nearly every input/textarea
+   in this app renders with Tailwind's text-sm (14px) applied directly
+   in its own className (see the many local `inputClass` constants
+   across pages/components). A plain element selector here has lower
+   specificity than that utility class, so !important is the deliberate,
+   narrowly-scoped way to guarantee this wins on every one of those
+   without editing every inputClass definition individually — scoped to
+   mobile viewports only (matches this app's own `sm:` breakpoint) and
+   to form controls only, so desktop typography and every non-form
+   text-sm element (labels, table cells, badges, ...) are untouched.
+   Native <select> doesn't currently exist anywhere in this app (every
+   dropdown is the custom Select/UserSelect/AdminSelect button-based
+   listbox, see components/ui/Select.jsx) — included anyway so this stays
+   correct if one is ever added. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot, .pulse-dot-red {
+    animation: none;
+  }
+}
+
+/* Modal entrance — subtle fade + rise, so a dialog opening reads as
+   deliberate rather than an abrupt pop-in. Runs once on mount (see
+   Modal, which conditionally renders the whole tree, so this class is
+   freshly applied every time a modal opens). */
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-modal-in {
+  animation: modal-in 0.18s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-modal-in {
+    animation: none;
+  }
+}
+
+/* ==============================
+   Admin Portal theme
+   ============================== */
+
+/* Ambient background: violet/gold glow, solid gradient — no cyan, no scanline grid */
+.admin-shell {
+  background-image:
+    radial-gradient(circle at 15% 10%, rgba(168, 85, 247, 0.16), transparent 42%),
+    radial-gradient(circle at 85% 90%, rgba(245, 158, 11, 0.08), transparent 45%),
+    linear-gradient(180deg, #0b0710 0%, #0e0a16 100%);
+  min-height: 100vh;
+}
+
+/* Solid panel material — deliberately not glass/blurred, to read as a
+   different "product" from the User Portal at a glance */
+.admin-panel {
+  background: linear-gradient(180deg, #170f24, #130c1e);
+  border: 1px solid rgba(168, 85, 247, 0.16);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.admin-panel-strong {
+  background: linear-gradient(180deg, #1c1330, #150e22);
+  border: 1px solid rgba(168, 85, 247, 0.26);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+.admin-pulse-dot {
+  box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.6);
+  animation: admin-pulse-ring 2s infinite;
+}
+@keyframes admin-pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.55); }
+  70% { box-shadow: 0 0 0 8px rgba(168, 85, 247, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-pulse-dot {
+    animation: none;
+  }
+}
+
+/* Modal entrance — subtle fade + rise, so a dialog opening reads as
+   deliberate rather than an abrupt pop-in. Runs once on mount (see
+   AdminModal, which conditionally renders the whole tree, so this
+   class is freshly applied every time a modal opens). */
+@keyframes admin-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-admin-modal-in {
+  animation: admin-modal-in 0.18s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-admin-modal-in {
+    animation: none;
+  }
+}
+
+/* ==============================
+   Admin Portal — Light theme
+   Scoped entirely under [data-admin-theme="light"], an attribute only
+   ever present on the wrapper the Admin Portal's own route tree renders
+   (see AdminThemeContext). Nothing here can reach the User Portal, which
+   never renders inside that wrapper.
+
+   --color-white / --color-admin-950 are remapped here, which is why a
+   handful of spots that must always stay a fixed literal color (button
+   labels and icon fills sitting on a permanently-vivid accent/gold
+   gradient, never on a themed surface) use literal hex values instead of
+   the `white` / `admin-950` tokens — see AdminButton, AdminNavbar,
+   AdminSidebar and AdminLogin.
+   ============================== */
+[data-admin-theme="light"] {
+  --color-white: #1c1330;
+  --color-admin-950: #f6f3fa;
+  --color-admin-900: #ffffff;
+
+  --color-ink-100: #241a35;
+  --color-ink-200: #3d3551;
+  --color-ink-300: #57506e;
+  --color-ink-400: #69617f;
+  --color-ink-500: #7b7391;
+  --color-ink-600: #8f87a4;
+  --color-ink-700: #a49cb8;
+}
+
+[data-admin-theme="light"] .admin-shell {
+  background-image:
+    radial-gradient(circle at 15% 10%, rgba(168, 85, 247, 0.10), transparent 42%),
+    radial-gradient(circle at 85% 90%, rgba(245, 158, 11, 0.07), transparent 45%),
+    linear-gradient(180deg, #f8f6fb 0%, #f1edf7 100%);
+}
+
+[data-admin-theme="light"] .admin-panel {
+  background: linear-gradient(180deg, #ffffff, #f7f4fb);
+  border: 1px solid rgba(168, 85, 247, 0.16);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 12px 28px rgba(90, 60, 130, 0.08);
+}
+
+[data-admin-theme="light"] .admin-panel-strong {
+  background: linear-gradient(180deg, #ffffff, #f3eef9);
+  border: 1px solid rgba(168, 85, 247, 0.24);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 16px 36px rgba(90, 60, 130, 0.12);
+}
+
+[data-admin-theme="light"] .custom-scroll::-webkit-scrollbar-thumb {
+  background: rgba(28, 19, 48, 0.14);
+}
+[data-admin-theme="light"] .custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(168, 85, 247, 0.35);
+}
