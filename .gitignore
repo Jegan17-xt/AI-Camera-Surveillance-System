@@ -32,3 +32,7 @@ generated_reports/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# --- Backup archives / stray scratch files (not source) ---
+*.zip
+AI_Camera/Backend/Users*scratchpad*.png
