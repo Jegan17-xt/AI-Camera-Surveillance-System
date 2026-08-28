@@ -22,7 +22,7 @@ from requests.auth import HTTPDigestAuth
 from sqlalchemy import select, func, text
 
 from db import get_session, engine
-from auth.models import Camera, to_dict
+from auth.models import Camera, Site, to_dict
 from api.camera_crypto import encrypt_password, decrypt_password
 from api.validators import (
     validate_text_field,
@@ -53,6 +53,28 @@ def _validate_owner_user_id(customer_id, owner_user_id):
 
     if owner_user_id not in company_user_ids:
         return "Selected user does not belong to this company."
+
+    return None
+
+
+def _validate_site_id(customer_id, site_id):
+    """Site / VPN Gateway Management: None (no Site) is always fine. A
+    real id must belong to THIS company's own Sites — never trusted
+    blind, never lets one company's camera be associated with another
+    company's Site. Queried directly against the Site model (not via
+    api/sites.py) to avoid a circular import — api/sites.py itself
+    imports from this module."""
+
+    if site_id is None:
+        return None
+
+    with get_session() as session:
+        exists = session.scalar(
+            select(Site.site_id).where(Site.site_id == site_id, Site.customer_id == customer_id)
+        )
+
+    if exists is None:
+        return "Selected site does not belong to this company."
 
     return None
 
@@ -708,6 +730,12 @@ def _serialize(row):
         "last_connected_time": row["last_connected_time"],
         "created_at": row["created_at"],
         "owner_user_id": row.get("owner_user_id"),
+        # Site / VPN Gateway Management — None for every camera created
+        # before this feature (and any company that never uses Sites at
+        # all). Purely an access/grouping association: never read by
+        # build_rtsp_url/_resolve_connection_url, so this has zero effect
+        # on how a camera actually connects.
+        "site_id": row.get("site_id"),
     }
 
 
@@ -860,7 +888,7 @@ def get_camera(camera_id, customer_id, restrict_to_owner_user_id=None):
         return _serialize(to_dict(row)) if row else None
 
 
-def add_camera(customer_id, camera_name, camera_ip, username, password, port, channel_number, brand, custom_rtsp_url, camera_location, owner_user_id=None, stream_quality=DEFAULT_STREAM_QUALITY):
+def add_camera(customer_id, camera_name, camera_ip, username, password, port, channel_number, brand, custom_rtsp_url, camera_location, owner_user_id=None, stream_quality=DEFAULT_STREAM_QUALITY, site_id=None):
 
     camera_name = (camera_name or "").strip()
     camera_ip = (camera_ip or "").strip()
@@ -881,6 +909,7 @@ def add_camera(customer_id, camera_name, camera_ip, username, password, port, ch
         or _validate_location(camera_location)
         or _validate_owner_user_id(customer_id, owner_user_id)
         or validate_stream_quality(stream_quality)
+        or _validate_site_id(customer_id, site_id)
     )
 
     if not error and brand == "custom":
@@ -948,6 +977,7 @@ def add_camera(customer_id, camera_name, camera_ip, username, password, port, ch
             last_connected_time=last_connected_time,
             created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             owner_user_id=owner_user_id,
+            site_id=site_id,
         )
         session.add(camera)
         session.flush()
@@ -968,7 +998,7 @@ def add_camera(customer_id, camera_name, camera_ip, username, password, port, ch
     return get_camera(new_id, customer_id), None
 
 
-def update_camera(camera_id, customer_id, camera_name, camera_ip, username, password, port, channel_number, brand, custom_rtsp_url, camera_location, owner_user_id=_UNSET, stream_quality=_UNSET, restrict_to_owner_user_id=None):
+def update_camera(camera_id, customer_id, camera_name, camera_ip, username, password, port, channel_number, brand, custom_rtsp_url, camera_location, owner_user_id=_UNSET, stream_quality=_UNSET, site_id=_UNSET, restrict_to_owner_user_id=None):
     """Security fix — password (and, for brand == "custom", the RTSP URL)
     are now write-only fields from the Edit form's point of view: since
     _serialize() no longer returns the real secret for the form to
@@ -1003,6 +1033,9 @@ def update_camera(camera_id, customer_id, camera_name, camera_ip, username, pass
 
     if not error and stream_quality is not _UNSET:
         error = validate_stream_quality(stream_quality)
+
+    if not error and site_id is not _UNSET:
+        error = _validate_site_id(customer_id, site_id)
 
     if not error and brand == "custom" and custom_rtsp_url:
         # Only validated when actually provided — a blank value here
@@ -1145,6 +1178,9 @@ def update_camera(camera_id, customer_id, camera_name, camera_ip, username, pass
 
         if owner_user_id is not _UNSET:
             camera.owner_user_id = owner_user_id
+
+        if site_id is not _UNSET:
+            camera.site_id = site_id
 
         detection_currently_enabled = bool(camera.detection_enabled)
         effective_owner_user_id = camera.owner_user_id

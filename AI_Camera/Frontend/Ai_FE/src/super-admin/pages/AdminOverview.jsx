@@ -6,6 +6,7 @@ import AdminPageHeader from "../ui/AdminPageHeader";
 import AdminSearchInput from "../ui/AdminSearchInput";
 import AdminCard from "../ui/AdminCard";
 import AdminBadge from "../ui/AdminBadge";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 // Read-only rollup, computed server-side from real DB rows and real
 // files on disk (see Backend/api/admin_overview.py) — nothing here is
@@ -23,7 +24,7 @@ export default function AdminOverview() {
     setError(null);
 
     axios
-      .get("http://localhost:5000/admin-overview/companies")
+      .get(`${API_BASE_URL}/admin-overview/companies`)
       .then((res) => setCompanies(res.data.companies || []))
       .catch((err) => {
         console.error("Admin & User Overview API Error :", err);

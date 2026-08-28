@@ -8,6 +8,7 @@ import Toast from "../components/ui/Toast";
 import UserScopeSelector from "../components/ui/UserScopeSelector";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { DATA_EVENTS, emitDataEvent, useDataEvent } from "../lib/dataEvents";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const TYPE_ICON = {
   unknown_person: ScanFace,
@@ -27,7 +28,7 @@ export default function Notifications() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/account/notifications", {
+      .get(`${API_BASE_URL}/account/notifications`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => setNotifications(res.data.notifications || []))
@@ -46,7 +47,7 @@ export default function Notifications() {
 
   const handleMarkRead = (id) => {
     axios
-      .put(`http://localhost:5000/account/notifications/${id}/read`)
+      .put(`${API_BASE_URL}/account/notifications/${id}/read`)
       .then(() => {
         setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
         emitDataEvent(DATA_EVENTS.NOTIFICATIONS_CHANGED);
@@ -57,7 +58,7 @@ export default function Notifications() {
   const handleMarkAllRead = () => {
     setMarkingAll(true);
     axios
-      .put("http://localhost:5000/account/notifications/read-all", null, {
+      .put(`${API_BASE_URL}/account/notifications/read-all`, null, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then(() => {
@@ -73,7 +74,7 @@ export default function Notifications() {
 
   const handleDelete = (id) => {
     axios
-      .delete(`http://localhost:5000/account/notifications/${id}`)
+      .delete(`${API_BASE_URL}/account/notifications/${id}`)
       .then(() => {
         setNotifications((prev) => prev.filter((n) => n.id !== id));
         emitDataEvent(DATA_EVENTS.NOTIFICATIONS_CHANGED);

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 const DEFAULT_APP_NAME = "Sentinel Admin";
 const AdminBrandingContext = createContext(null);
@@ -18,7 +19,7 @@ export function AdminBrandingProvider({ children }) {
     let cancelled = false;
 
     axios
-      .get("http://localhost:5000/branding")
+      .get(`${API_BASE_URL}/branding`)
       .then((res) => {
         if (!cancelled) setBranding(res.data);
       })

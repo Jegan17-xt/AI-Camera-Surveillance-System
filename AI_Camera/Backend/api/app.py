@@ -13,6 +13,7 @@ from auth.csrf import validate_csrf, set_csrf_cookie, SAFE_METHODS as CSRF_SAFE_
 from error_logging import log_exception
 from api.settings import init_settings_table
 from api.cameras import init_cameras_table
+from api.sites import init_sites_tables
 from api.branding import init_branding_table
 from api.ai_config import init_ai_config_table
 from api.subscriptions import init_subscriptions_table
@@ -23,6 +24,7 @@ from api.notification_settings import init_notification_report_tables
 from api.billing import init_billing_tables
 from api.retention_settings import init_retention_tables
 from camera.detection_service import start_all_enabled_cameras
+from camera import ai_prewarm
 from reports.scheduler import start_report_scheduler
 from retention.scheduler import start_retention_scheduler
 
@@ -47,8 +49,19 @@ app.secret_key = get_or_create_secret_key()
 # read the moment the app starts.
 init_settings_table()
 
+# Site / VPN Gateway Management Setup — creates/backfills the `sites`,
+# `site_users`, and `cameras.site_id` schema. Both the `sites` and
+# `cameras` tables it touches are already created by init_db()'s
+# Base.metadata.create_all() above, so this only needs to run after
+# init_db(). It MUST run before init_cameras_table(): on a database that
+# predates the `site_id` column, init_cameras_table()'s own ORM query
+# selects Camera (which now includes `site_id`), so that column has to
+# exist first or startup crashes with "Unknown column 'cameras.site_id'".
+init_sites_tables()
+
 # Cameras Setup — must run after init_db(), since the cameras table's
-# FOREIGN KEY references the users table.
+# FOREIGN KEY references the users table. Runs after init_sites_tables()
+# so the `cameras.site_id` column exists before any Camera ORM query here.
 init_cameras_table()
 
 # Branding Setup — platform-wide Application Name/Logo (Super Admin
@@ -132,6 +145,27 @@ _should_start_background_services = (
 if _should_start_background_services:
     start_all_enabled_cameras()
 
+    # AI model pre-warm — automatic, one-time, at boot, off the request
+    # path. camera/detection_service.py's processor loop already calls the
+    # same warmup() functions before it processes its first frame; the
+    # problem is WHEN. With zero enabled RTSP cameras, the very first
+    # thing that ever loads YOLO + InsightFace is the local-webcam debug
+    # toggle — and InsightFace's first get_app() (buffalo_l download +
+    # onnxruntime session build) can take minutes on a cold machine. For
+    # that whole window the webcam's reader thread keeps publishing raw
+    # frames (live view works) but the processor thread hasn't produced a
+    # single annotated frame yet, so NO detection overlay is drawn.
+    #
+    # camera/ai_prewarm.py owns this now: it spawns exactly ONE daemon
+    # thread (never blocks app.run() binding the port), exposes an
+    # internal readiness state (AI_PREWARMING / AI_READY /
+    # AI_PREWARM_FAILED), and — critically — lets each camera processor
+    # thread WAIT for that shared warm-up instead of starting its own
+    # concurrent cold load. Nothing about detection/recognition itself
+    # changes: same models, same thresholds, same code path, only pulled
+    # one step earlier and coordinated through one place.
+    ai_prewarm.start_prewarm()
+
     # Notification & Reporting Layer — Daily Report scheduler. Same
     # guard as the AI Detection Engine above, same reasoning. A scheduler
     # failure is isolated inside reports/scheduler.py itself and can
@@ -157,10 +191,32 @@ if _should_start_background_services:
 # way, since it's the same "unset = off" default.
 _session_cookie_secure = os.environ.get("SESSION_COOKIE_SECURE", "").strip().lower() in ("1", "true", "yes")
 
+# Cookie `Domain` attribute — unset by default, which makes both the
+# session cookie and the CSRF cookie (auth/csrf.py) host-only: scoped
+# exactly to the hostname that set them. That's correct and sufficient
+# whenever the frontend calls this API directly (the browser already
+# attaches a host-only cookie to every request back to that same host,
+# same-origin or not). It breaks down specifically for the CSRF cookie
+# when the frontend and this API are deployed on different subdomains of
+# the same parent domain (e.g. frontend on app.example.com, API on
+# api.example.com): the frontend's JS reads the CSRF cookie via
+# document.cookie to echo it back as a header (see main.jsx), and
+# document.cookie can only ever see cookies whose Domain matches the
+# PAGE's own host — never a different subdomain's host-only cookie, even
+# though the browser happily sends that same cookie back to the API on
+# XHR requests. The session cookie still works fine in that layout
+# without this (it's HttpOnly, never read by JS, and is always sent
+# straight to the API host it was issued for) — only the CSRF cookie
+# actually needs the wider scope. Set this to the shared parent domain
+# (e.g. ".example.com") only when frontend and API are split across
+# subdomains like that; leave unset when they share one host.
+_session_cookie_domain = os.environ.get("SESSION_COOKIE_DOMAIN", "").strip() or None
+
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=_session_cookie_secure,
+    SESSION_COOKIE_DOMAIN=_session_cookie_domain,
     PERMANENT_SESSION_LIFETIME=timedelta(days=7),
     # Without this, Werkzeug fully buffers a request body of ANY size
     # before any handler's own per-file size check ever runs — a request

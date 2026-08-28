@@ -1,0 +1,16 @@
+# SPA fallback for Apache: this is a React Router app — every route other
+# than the built assets is virtual (handled client-side), not a real file
+# on disk. Without this, a direct hit or refresh on e.g. /admin/login
+# never reaches index.html; Apache 404s it before React Router ever runs.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Real files/directories (JS/CSS/images/favicon, etc.) are served as-is.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Everything else falls back to index.html so the app can render the route.
+  RewriteRule ^ index.html [L]
+</IfModule>

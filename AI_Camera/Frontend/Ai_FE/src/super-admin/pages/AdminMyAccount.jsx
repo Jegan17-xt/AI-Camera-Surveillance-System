@@ -7,6 +7,7 @@ import AdminButton from "../ui/AdminButton";
 import AdminToast from "../ui/AdminToast";
 import { useAuth } from "../../context/AuthContext";
 import { DATA_EVENTS, emitDataEvent } from "../../lib/dataEvents";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   validateTextField,
   validateEmail,
@@ -86,7 +87,7 @@ export default function AdminMyAccount() {
     // this can never touch a customer's account regardless of what `user`
     // holds client-side.
     axios
-      .put("http://localhost:5000/account/profile", {
+      .put(`${API_BASE_URL}/account/profile`, {
         name: profile.name.trim(),
         email: profile.email.trim(),
         username: profile.username.trim(),
@@ -123,7 +124,7 @@ export default function AdminMyAccount() {
     setSavingPassword(true);
 
     axios
-      .put("http://localhost:5000/account/password", {
+      .put(`${API_BASE_URL}/account/password`, {
         new_password: newPassword,
       })
       .then(() => {

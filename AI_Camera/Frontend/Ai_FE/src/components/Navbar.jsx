@@ -7,6 +7,7 @@ import { useSelectedUser } from "../context/SelectedUserContext";
 import { roleLabel } from "../lib/permissions";
 import { DATA_EVENTS, emitDataEvent, useDataEvent } from "../lib/dataEvents";
 import { usePolling } from "../lib/usePolling";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const NOTIF_POLL_MS = 15000;
 // Same cadence as notifications — the Super Admin who changes this
@@ -53,7 +54,7 @@ export default function Navbar({ onMenuClick, basePath }) {
     if (basePath !== "/admin") return;
 
     axios
-      .get("http://localhost:5000/account/retention-settings")
+      .get(`${API_BASE_URL}/account/retention-settings`)
       .then((res) => setRetentionPolicy(res.data.retention_settings?.policy || null))
       .catch(() => {});
   };
@@ -70,7 +71,7 @@ export default function Navbar({ onMenuClick, basePath }) {
 
   const fetchNotifSummary = () => {
     axios
-      .get("http://localhost:5000/account/notifications", {
+      .get(`${API_BASE_URL}/account/notifications`, {
         params: { limit: 6, ...(selectedUserId !== null ? { user_id: selectedUserId } : {}) },
       })
       .then((res) => {
@@ -86,7 +87,7 @@ export default function Navbar({ onMenuClick, basePath }) {
 
   const handleMarkAllRead = () => {
     axios
-      .put("http://localhost:5000/account/notifications/read-all", null, {
+      .put(`${API_BASE_URL}/account/notifications/read-all`, null, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then(() => {

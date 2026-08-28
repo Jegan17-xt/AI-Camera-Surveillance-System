@@ -13,6 +13,7 @@ import Select from "../components/ui/Select";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { useAuth } from "../context/AuthContext";
 import { isCompanyAdmin } from "../lib/permissions";
+import { API_BASE_URL } from "../lib/apiBase";
 import {
   validateTextField,
   validateIPv4,
@@ -61,6 +62,12 @@ const emptyForm = {
   camera_location: "",
   owner_user_id: "",
   stream_quality: DEFAULT_STREAM_QUALITY,
+  // Site / VPN Gateway Management — "" means "No Site", same convention
+  // owner_user_id already uses. Purely an access/grouping association;
+  // never affects camera_ip/username/password/port/channel_number or
+  // how the RTSP connection is actually built (see Backend/api/
+  // cameras.py's build_rtsp_url, untouched by this field).
+  site_id: "",
 };
 
 const inputClass =
@@ -91,7 +98,7 @@ export default function CameraManagement() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/company/cameras")
+      .get(`${API_BASE_URL}/company/cameras`)
       .then((res) => setCameras(res.data.cameras || []))
       .catch((err) => {
         console.error("Company Cameras API Error :", err);
@@ -110,14 +117,32 @@ export default function CameraManagement() {
 
   const fetchQuota = () => {
     return axios
-      .get("http://localhost:5000/company/cameras/quota")
+      .get(`${API_BASE_URL}/company/cameras/quota`)
       .then((res) => setQuota(res.data))
       .catch(() => setQuota(null));
+  };
+
+  // Site / VPN Gateway Management — GET /company/sites is scoped
+  // server-side by role: a Company Admin gets every Site in the
+  // company, a User gets only the Sites they've been explicitly granted
+  // (see Backend/api/routes.py's company_sites_list). Filtered to
+  // Active-only here since a deactivated Site shouldn't be offered when
+  // adding/editing a camera, even though it may still be attached to an
+  // existing camera (see siteOptions below, which adds it back in that
+  // one case so the Edit form doesn't show a blank selection).
+  const [sites, setSites] = useState([]);
+
+  const fetchSites = () => {
+    return axios
+      .get(`${API_BASE_URL}/company/sites`)
+      .then((res) => setSites(res.data.sites || []))
+      .catch(() => setSites([]));
   };
 
   useEffect(() => {
     fetchCameras();
     fetchQuota();
+    fetchSites();
   }, []);
 
   const myQuota = quota?.admin || quota?.user || null;
@@ -163,6 +188,20 @@ export default function CameraManagement() {
   };
   const isFormValid = hasNoErrors(errors);
 
+  // Active Sites only, plus — while editing a camera that's already
+  // assigned to a since-deactivated Site — that one Site too, so the
+  // Edit form's dropdown still shows its current value instead of
+  // silently falling back to "No Site".
+  const siteOptions = useMemo(() => {
+    const active = sites.filter((s) => s.status === "Active");
+    const currentSiteId = editTarget?.site_id;
+    if (currentSiteId && !active.some((s) => s.site_id === currentSiteId)) {
+      const current = sites.find((s) => s.site_id === currentSiteId);
+      if (current) return [...active, current];
+    }
+    return active;
+  }, [sites, editTarget]);
+
   const openAdd = () => {
     if (atLimit) {
       setToast({
@@ -195,6 +234,7 @@ export default function CameraManagement() {
       camera_location: camera.camera_location || "",
       owner_user_id: camera.owner_user_id != null ? String(camera.owner_user_id) : "",
       stream_quality: camera.stream_quality || DEFAULT_STREAM_QUALITY,
+      site_id: camera.site_id != null ? String(camera.site_id) : "",
     });
     setTouched({});
     setFormError(null);
@@ -216,7 +256,7 @@ export default function CameraManagement() {
     setTestResult(null);
 
     axios
-      .post("http://localhost:5000/company/cameras/test-connection", {
+      .post(`${API_BASE_URL}/company/cameras/test-connection`, {
         brand: form.brand,
         camera_ip: form.camera_ip.trim(),
         username: form.username.trim(),
@@ -261,11 +301,12 @@ export default function CameraManagement() {
       camera_location: form.camera_location.trim(),
       owner_user_id: form.owner_user_id === "" ? null : Number(form.owner_user_id),
       stream_quality: form.stream_quality,
+      site_id: form.site_id === "" ? null : Number(form.site_id),
     };
 
     const request = editTarget
-      ? axios.put(`http://localhost:5000/company/cameras/${editTarget.camera_id}`, payload)
-      : axios.post("http://localhost:5000/company/cameras", payload);
+      ? axios.put(`${API_BASE_URL}/company/cameras/${editTarget.camera_id}`, payload)
+      : axios.post(`${API_BASE_URL}/company/cameras`, payload);
 
     request
       .then(() => {
@@ -290,7 +331,7 @@ export default function CameraManagement() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/company/cameras/${deleteTarget.camera_id}`)
+      .delete(`${API_BASE_URL}/company/cameras/${deleteTarget.camera_id}`)
       .then(() => {
         setToast({ type: "success", message: `${deleteTarget.camera_name} deleted successfully.` });
         fetchQuota();
@@ -315,7 +356,7 @@ export default function CameraManagement() {
     setTogglingId(camera.camera_id);
 
     axios
-      .put(`http://localhost:5000/company/cameras/${camera.camera_id}/detection`, {
+      .put(`${API_BASE_URL}/company/cameras/${camera.camera_id}/detection`, {
         detection_enabled: !camera.detection_enabled,
       })
       .then(() => fetchCameras())
@@ -430,6 +471,7 @@ export default function CameraManagement() {
                   <th className="px-3 py-3 font-medium">Name</th>
                   <th className="px-3 py-3 font-medium">IP Address</th>
                   <th className="px-3 py-3 font-medium">Location</th>
+                  <th className="px-3 py-3 font-medium">Site</th>
                   <th className="px-3 py-3 font-medium">Assigned User</th>
                   <th className="px-3 py-3 font-medium">Quality</th>
                   <th className="px-3 py-3 font-medium">Status</th>
@@ -443,6 +485,9 @@ export default function CameraManagement() {
                     <td className="px-3 py-3 font-medium text-ink-100">{camera.camera_name}</td>
                     <td className="px-3 py-3 font-mono text-xs text-ink-400">{camera.camera_ip}</td>
                     <td className="px-3 py-3 text-xs text-ink-400">{camera.camera_location || "—"}</td>
+                    <td className="px-3 py-3 text-xs text-ink-400">
+                      {sites.find((s) => s.site_id === camera.site_id)?.site_name || "—"}
+                    </td>
                     <td className="px-3 py-3 text-xs text-ink-400">
                       {companyUsers.find((u) => u.id === camera.owner_user_id)?.name || "Unassigned"}
                     </td>
@@ -494,7 +539,7 @@ export default function CameraManagement() {
 
                 {cameras.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-16 text-center text-ink-500">
+                    <td colSpan={8} className="px-3 py-16 text-center text-ink-500">
                       <div className="flex flex-col items-center gap-2">
                         <CameraIcon size={22} />
                         <p>No cameras have been added yet.</p>
@@ -505,7 +550,7 @@ export default function CameraManagement() {
 
                 {cameras.length > 0 && filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-12 text-center text-ink-500">
+                    <td colSpan={8} className="px-3 py-12 text-center text-ink-500">
                       No cameras match "{query}".
                     </td>
                   </tr>
@@ -578,6 +623,25 @@ export default function CameraManagement() {
                 className={inputClass}
               />
             </div>
+          </div>
+
+          {/* Site / VPN Gateway Management — visible to both roles. A
+              Company Admin sees every Active Site in the company; a User
+              sees only the Sites they've been granted access to (see
+              Backend/api/routes.py's company_sites_list) — the backend
+              re-validates whichever value is submitted either way, so
+              this list being pre-filtered is a UX convenience, not the
+              real access control. */}
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-ink-400">Site / Office</label>
+            <Select
+              value={form.site_id}
+              onChange={(e) => setForm((f) => ({ ...f, site_id: e.target.value }))}
+              options={[
+                { value: "", label: "No Site" },
+                ...siteOptions.map((s) => ({ value: String(s.site_id), label: s.site_name })),
+              ]}
+            />
           </div>
 
           {/* Company Admin only — a User has no other Users to assign a

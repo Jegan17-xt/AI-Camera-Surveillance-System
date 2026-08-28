@@ -80,6 +80,7 @@ from sqlalchemy import select
 from db import get_session
 from auth.models import Camera
 from camera.frame_processor import process_frame, compute_tracking_key, drop_tracking_state
+from camera import ai_prewarm
 from detection.detector import warmup as warmup_yolo, drop_model as drop_yolo_model
 from face.face_detector import warmup as warmup_face
 from face.track_verifier import drop_tracks
@@ -142,6 +143,17 @@ def _reconnect_backoff_seconds(consecutive_failures):
 # than track_verifier's multi-frame consensus needs while leaving real
 # CPU headroom.
 PROCESSING_FPS_CAP = 5
+
+# How long a just-started camera processor thread will wait for the
+# shared boot pre-warm (camera/ai_prewarm.py) to reach AI_READY before
+# giving up and doing the model load itself as a last resort. Sized to
+# comfortably cover a cold first-ever InsightFace load (buffalo_l
+# download + onnxruntime session build — minutes on a slow machine/
+# connection); if it is exceeded, the fallback path below still works,
+# it just re-pays what the pre-warm was supposed to have absorbed. Only
+# ever blocks THIS processor thread — the reader thread (live view) and
+# the web server are never affected.
+AI_PREWARM_WAIT_SECONDS = 300
 
 # The live MJPEG feed's own frame rate is NOT tied to PROCESSING_FPS_CAP
 # — that would recreate the exact slideshow problem this fix addresses.
@@ -716,6 +728,23 @@ def _camera_processor_loop(camera_id, entry):
     try:
         warmup_t0 = time.perf_counter()
         tracking_key = compute_tracking_key(customer_id, entry["pipeline_camera_id"])
+
+        # Until the shared boot pre-warm has finished, a camera turned on
+        # must NOT kick off its own concurrent cold model load — two
+        # threads both doing InsightFace's first get_app() just serialize
+        # on its internal lock and take far longer than one would. Wait
+        # for AI_READY first; the warmup_*() calls below then hit
+        # already-loaded models and return fast. If the pre-warm failed
+        # or is somehow still not ready after AI_PREWARM_WAIT_SECONDS,
+        # fall through anyway — the same warmup_*() calls then do the
+        # load themselves, exactly as before this coordination existed,
+        # so a camera still always works.
+        if not ai_prewarm.wait_until_ready(timeout=AI_PREWARM_WAIT_SECONDS):
+            print(
+                f"[AI ENGINE] Camera {camera_id}: boot pre-warm not ready "
+                f"(state={ai_prewarm.get_state()}) — loading AI models on this thread instead"
+            )
+
         warmup_yolo(tracking_key)
         warmup_face()
         print(f"[AI ENGINE] Camera {camera_id}: AI models warmed up in {round((time.perf_counter() - warmup_t0) * 1000, 1)}ms")

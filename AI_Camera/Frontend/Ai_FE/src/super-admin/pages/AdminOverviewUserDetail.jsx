@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   ArrowLeft,
   UserRound,
@@ -40,7 +41,7 @@ export default function AdminOverviewUserDetail() {
     setError(null);
 
     axios
-      .get(`http://localhost:5000/admin-overview/companies/${id}/users/${userId}`)
+      .get(`${API_BASE_URL}/admin-overview/companies/${id}/users/${userId}`)
       .then((res) => setDetail(res.data))
       .catch((err) => {
         console.error("User Storage Overview API Error :", err);

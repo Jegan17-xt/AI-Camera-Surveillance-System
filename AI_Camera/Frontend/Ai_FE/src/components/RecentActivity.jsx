@@ -5,6 +5,7 @@ import GlassCard from "./ui/GlassCard";
 import Button from "./ui/Button";
 import Modal from "./ui/Modal";
 import Toast from "./ui/Toast";
+import { API_BASE_URL } from "../lib/apiBase";
 
 // Only real, backend-sourced event types (see Backend/api/dashboard.py
 // get_recent_activity). No "check-out"/"alert"/camera-status entries —
@@ -27,7 +28,7 @@ export default function RecentActivity({ items, onChanged }) {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/dashboard/activity/${deleteTarget.id}`)
+      .delete(`${API_BASE_URL}/dashboard/activity/${deleteTarget.id}`)
       .then(() => {
         setDeleteTarget(null);
         onChanged?.();
@@ -42,7 +43,7 @@ export default function RecentActivity({ items, onChanged }) {
     setClearing(true);
 
     axios
-      .delete("http://localhost:5000/dashboard/activity")
+      .delete(`${API_BASE_URL}/dashboard/activity`)
       .then(() => {
         setClearAllOpen(false);
         onChanged?.();

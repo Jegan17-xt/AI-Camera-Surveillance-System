@@ -4,6 +4,25 @@ from camera import detection_service
 
 STREAM_FPS_CAP = 20  # how often an MJPEG generator emits a frame
 
+
+def _mjpeg_part(jpeg_bytes):
+    """One `multipart/x-mixed-replace` part for an <img>-consumed MJPEG
+    stream. Emitting an explicit Content-Length is what lets the browser
+    delimit each frame by byte count instead of scanning the JPEG
+    payload for the next `--frame` boundary — without it some browsers
+    (Chrome in particular) render only the FIRST frame and then freeze
+    the <img>, which looks exactly like "the live video stopped
+    updating / the detection box never appears". The framing itself is
+    unchanged: `--frame` CRLF, headers, blank line, JPEG, trailing CRLF
+    before the next boundary."""
+
+    return (
+        b"--frame\r\n"
+        b"Content-Type: image/jpeg\r\n"
+        b"Content-Length: " + str(len(jpeg_bytes)).encode("ascii") + b"\r\n"
+        b"\r\n" + jpeg_bytes + b"\r\n"
+    )
+
 # ==========================================================================
 # Local test webcam — Debug Mode. Runs through the EXACT SAME
 # detection_service worker (reader thread + AI processor thread calling
@@ -79,7 +98,6 @@ def get_local_status(customer_id):
 
 def generate_local_mjpeg(customer_id):
 
-    boundary = b"--frame"
     delay = 1.0 / STREAM_FPS_CAP
 
     while True:
@@ -87,10 +105,7 @@ def generate_local_mjpeg(customer_id):
         frame = detection_service.get_latest_jpeg(LOCAL_CAMERA_KEY)
 
         if frame is not None:
-            yield (
-                boundary + b"\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-            )
+            yield _mjpeg_part(frame)
 
         time.sleep(delay)
 
@@ -111,7 +126,6 @@ def get_camera_stream_status(camera_id, customer_id, rtsp_url):
 
 def generate_camera_mjpeg(camera_id, customer_id, rtsp_url):
 
-    boundary = b"--frame"
     delay = 1.0 / STREAM_FPS_CAP
 
     while True:
@@ -119,9 +133,6 @@ def generate_camera_mjpeg(camera_id, customer_id, rtsp_url):
         frame = detection_service.get_latest_jpeg(camera_id)
 
         if frame is not None:
-            yield (
-                boundary + b"\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-            )
+            yield _mjpeg_part(frame)
 
         time.sleep(delay)

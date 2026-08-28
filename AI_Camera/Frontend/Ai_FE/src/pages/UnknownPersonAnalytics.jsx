@@ -8,6 +8,7 @@ import UserScopeSelector from "../components/ui/UserScopeSelector";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
 import { usePolling } from "../lib/usePolling";
+import { API_BASE_URL } from "../lib/apiBase";
 
 // New unknown-person detections happen on the backend's camera-processing
 // thread — a different process than this tab — so polling is what
@@ -27,7 +28,7 @@ export default function UnknownPersonAnalytics() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/company/unknown-analytics", {
+      .get(`${API_BASE_URL}/company/unknown-analytics`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => {

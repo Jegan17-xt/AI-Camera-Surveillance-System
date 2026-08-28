@@ -9,16 +9,17 @@ import UserScopeSelector from "../components/ui/UserScopeSelector";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
 import { usePolling } from "../lib/usePolling";
+import { API_BASE_URL } from "../lib/apiBase";
 
-const CAMERAS_URL = "http://localhost:5000/account/cameras";
-const LOCAL_START_URL = "http://localhost:5000/live-camera/local/start";
-const LOCAL_STOP_URL = "http://localhost:5000/live-camera/local/stop";
-const LOCAL_STATUS_URL = "http://localhost:5000/live-camera/local/status";
-const LOCAL_STREAM_URL = "http://localhost:5000/live-camera/local/stream";
+const CAMERAS_URL = `${API_BASE_URL}/account/cameras`;
+const LOCAL_START_URL = `${API_BASE_URL}/live-camera/local/start`;
+const LOCAL_STOP_URL = `${API_BASE_URL}/live-camera/local/stop`;
+const LOCAL_STATUS_URL = `${API_BASE_URL}/live-camera/local/status`;
+const LOCAL_STREAM_URL = `${API_BASE_URL}/live-camera/local/stream`;
 const STATUS_POLL_MS = 3000;
 
-const cameraStatusUrl = (cameraId) => `http://localhost:5000/live-camera/status/${cameraId}`;
-const cameraStreamUrl = (cameraId) => `http://localhost:5000/live-camera/stream/${cameraId}`;
+const cameraStatusUrl = (cameraId) => `${API_BASE_URL}/live-camera/status/${cameraId}`;
+const cameraStreamUrl = (cameraId) => `${API_BASE_URL}/live-camera/stream/${cameraId}`;
 
 // One video tile — used for every configured camera AND for the opt-in
 // local test camera. Each instance polls its own status URL independently,

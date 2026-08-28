@@ -5,6 +5,7 @@ import { Loader2, AlertTriangle, Building2, Video, HardDrive } from "lucide-reac
 import AdminPageHeader from "../ui/AdminPageHeader";
 import AdminSearchInput from "../ui/AdminSearchInput";
 import AdminCard from "../ui/AdminCard";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 const formatAmount = (amount) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(amount || 0);
@@ -47,7 +48,7 @@ export default function AdminBillingOverview() {
     setError(null);
 
     axios
-      .get("http://localhost:5000/billing/overview")
+      .get(`${API_BASE_URL}/billing/overview`)
       .then((res) => setCompanies(res.data.companies || []))
       .catch((err) => {
         console.error("Billing Overview API Error :", err);

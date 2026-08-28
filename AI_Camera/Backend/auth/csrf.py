@@ -40,13 +40,23 @@ HEADER_NAME = "X-CSRF-Token"
 
 
 def set_csrf_cookie(response, token):
-    """Same SameSite/Secure posture as the session cookie itself (see
-    api/app.py's SESSION_COOKIE_* config) — EXCEPT httponly, which must
-    stay False here: the whole point is that frontend JS reads this
+    """Same SameSite/Secure/Domain posture as the session cookie itself
+    (see api/app.py's SESSION_COOKIE_* config) — EXCEPT httponly, which
+    must stay False here: the whole point is that frontend JS reads this
     value and echoes it back as a header (see main.jsx's axios
     interceptor). A cross-origin attacker page still can't read it
     (cookies are never readable cross-origin), so this doesn't weaken
-    anything — it's the mechanism, not a leak."""
+    anything — it's the mechanism, not a leak.
+
+    Domain matters here specifically: when the frontend and this API are
+    split across subdomains of one parent domain (SESSION_COOKIE_DOMAIN
+    set to e.g. ".example.com"), the frontend's document.cookie read only
+    succeeds if this cookie was actually issued for that shared parent —
+    a host-only cookie (the default when SESSION_COOKIE_DOMAIN is unset)
+    is invisible to JS running on a different subdomain, even though the
+    browser still sends it on XHR requests back to this API. Without this,
+    every state-changing request from that frontend fails CSRF validation
+    (missing X-CSRF-Token) despite having a perfectly valid session."""
 
     response.set_cookie(
         COOKIE_NAME,
@@ -54,12 +64,16 @@ def set_csrf_cookie(response, token):
         httponly=False,
         samesite="Lax",
         secure=current_app.config.get("SESSION_COOKIE_SECURE", False),
+        domain=current_app.config.get("SESSION_COOKIE_DOMAIN"),
         max_age=current_app.config.get("PERMANENT_SESSION_LIFETIME").total_seconds(),
     )
 
 
 def clear_csrf_cookie(response):
-    response.delete_cookie(COOKIE_NAME)
+    # Must specify the same `domain` used to set it — otherwise this
+    # deletes a *different*, host-only cookie the browser never had,
+    # leaving the real (possibly parent-domain-scoped) one behind.
+    response.delete_cookie(COOKIE_NAME, domain=current_app.config.get("SESSION_COOKIE_DOMAIN"))
 
 
 def issue_csrf_token():

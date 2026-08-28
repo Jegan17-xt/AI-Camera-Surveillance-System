@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   ArrowLeft,
   Building2,
@@ -136,7 +137,7 @@ export default function AdminOverviewDetail() {
     setError(null);
 
     return axios
-      .get(`http://localhost:5000/admin-overview/companies/${id}`)
+      .get(`${API_BASE_URL}/admin-overview/companies/${id}`)
       .then((res) => {
         setDetail(res.data);
         setLimitInput(res.data.storage_limit_gb ?? "");
@@ -153,12 +154,12 @@ export default function AdminOverviewDetail() {
     setModuleLoading(true);
 
     return Promise.all([
-      axios.get(`http://localhost:5000/users/${id}/permissions`),
+      axios.get(`${API_BASE_URL}/users/${id}/permissions`),
       // This company's effective price per module (its own override if
       // the Super Admin set one, otherwise the global catalog price) —
       // same resolution AdminBillingPricing.jsx and the Company Admin's
       // own Subscription & Payment page already use.
-      axios.get("http://localhost:5000/billing/items", { params: { customer_id: id } }),
+      axios.get(`${API_BASE_URL}/billing/items`, { params: { customer_id: id } }),
     ])
       .then(([permRes, itemsRes]) => {
         const allItems = itemsRes.data.items || [];
@@ -193,7 +194,7 @@ export default function AdminOverviewDetail() {
     setRetentionLoading(true);
 
     return axios
-      .get(`http://localhost:5000/users/${id}/retention-settings`)
+      .get(`${API_BASE_URL}/users/${id}/retention-settings`)
       .then((res) => {
         const policy = res.data.retention_settings?.policy || "permanent";
         setRetentionPolicy(policy);
@@ -227,7 +228,7 @@ export default function AdminOverviewDetail() {
     const moduleKeys = next.filter((m) => m.granted).map((m) => m.module_key);
 
     axios
-      .put(`http://localhost:5000/users/${id}/permissions`, { module_keys: moduleKeys })
+      .put(`${API_BASE_URL}/users/${id}/permissions`, { module_keys: moduleKeys })
       .then((res) => {
         const updated = res.data.permissions || [];
         setModuleAccess((current) =>
@@ -263,7 +264,7 @@ export default function AdminOverviewDetail() {
     setBillingSavingKey(item.item_key);
 
     axios
-      .put(`http://localhost:5000/billing/items/${item.id}/access/${id}`, { enabled: nextEnabled })
+      .put(`${API_BASE_URL}/billing/items/${item.id}/access/${id}`, { enabled: nextEnabled })
       .then(() => {
         setToast({ type: "success", message: nextEnabled ? `${item.name} turned ON.` : `${item.name} turned OFF.` });
       })
@@ -289,7 +290,7 @@ export default function AdminOverviewDetail() {
     setRetentionSaving(true);
 
     axios
-      .put(`http://localhost:5000/users/${id}/retention-settings`, { policy: pendingRetentionPolicy })
+      .put(`${API_BASE_URL}/users/${id}/retention-settings`, { policy: pendingRetentionPolicy })
       .then(() => {
         setRetentionPolicy(pendingRetentionPolicy);
         setToast({ type: "success", message: "Data retention settings saved." });
@@ -307,7 +308,7 @@ export default function AdminOverviewDetail() {
     const value = limitInput === "" ? null : Number(limitInput);
 
     axios
-      .put(`http://localhost:5000/admin-overview/companies/${id}/storage-limit`, { storage_limit_gb: value })
+      .put(`${API_BASE_URL}/admin-overview/companies/${id}/storage-limit`, { storage_limit_gb: value })
       .then((res) => {
         setDetail((prev) => ({ ...prev, ...res.data }));
         setToast({ type: "success", message: "Storage limit updated." });
@@ -325,7 +326,7 @@ export default function AdminOverviewDetail() {
     const value = cameraLimitInput === "" ? null : Number(cameraLimitInput);
 
     axios
-      .put(`http://localhost:5000/admin-overview/companies/${id}/camera-limit`, { camera_limit: value })
+      .put(`${API_BASE_URL}/admin-overview/companies/${id}/camera-limit`, { camera_limit: value })
       .then((res) => {
         setDetail((prev) => ({ ...prev, ...res.data }));
         setToast({ type: "success", message: "Camera limit updated." });

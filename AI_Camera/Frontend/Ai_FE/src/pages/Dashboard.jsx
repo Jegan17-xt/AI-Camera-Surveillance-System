@@ -10,6 +10,7 @@ import { useAuth } from "../context/AuthContext";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
 import { usePolling } from "../lib/usePolling";
+import { API_BASE_URL } from "../lib/apiBase";
 
 // New attendance marks and unknown-person detections are written by the
 // backend's 24/7 AI Detection Engine (camera/detection_service.py) —
@@ -45,7 +46,7 @@ export default function Dashboard() {
     authLog("Dashboard.jsx: firing GET /dashboard");
 
     return axios
-      .get("http://localhost:5000/dashboard", {
+      .get(`${API_BASE_URL}/dashboard`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => {

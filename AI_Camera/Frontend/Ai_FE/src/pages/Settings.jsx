@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "../lib/apiBase";
 import {
   Camera,
   ScanFace,
@@ -182,7 +183,7 @@ const CLEAR_ACTIONS = {
     confirmTitle: "Clear Unknown Images",
     confirmText: "This permanently deletes every unknown person record, face image, frame image, and embedding. This action cannot be undone.",
     method: "delete",
-    url: "http://localhost:5000/unknown-persons",
+    url: `${API_BASE_URL}/unknown-persons`,
     successMessage: "Unknown images cleared successfully.",
     event: DATA_EVENTS.UNKNOWN_PERSONS_CHANGED,
   },
@@ -191,7 +192,7 @@ const CLEAR_ACTIONS = {
     confirmTitle: "Clear Attendance Logs",
     confirmText: "This permanently deletes every attendance record. This action cannot be undone.",
     method: "delete",
-    url: "http://localhost:5000/attendance",
+    url: `${API_BASE_URL}/attendance`,
     successMessage: "Attendance logs cleared successfully.",
     event: DATA_EVENTS.ATTENDANCE_CHANGED,
   },
@@ -200,7 +201,7 @@ const CLEAR_ACTIONS = {
     confirmTitle: "Clear Activity Logs",
     confirmText: "This permanently deletes every activity log entry. This action cannot be undone.",
     method: "delete",
-    url: "http://localhost:5000/activity-logs",
+    url: `${API_BASE_URL}/activity-logs`,
     successMessage: "Activity logs cleared successfully.",
     event: DATA_EVENTS.ACTIVITY_LOGS_CHANGED,
   },
@@ -303,7 +304,7 @@ export default function Settings() {
     setTouched({});
 
     axios
-      .get("http://localhost:5000/settings", { params: settingsParams })
+      .get(`${API_BASE_URL}/settings`, { params: settingsParams })
       .then((res) => {
         setSettings(res.data.settings);
       })
@@ -322,7 +323,7 @@ export default function Settings() {
     setAiDetectionError(null);
 
     axios
-      .get("http://localhost:5000/ai-detection-settings", { params: settingsParams })
+      .get(`${API_BASE_URL}/ai-detection-settings`, { params: settingsParams })
       .then((res) => setAiDetection(res.data.ai_config))
       .catch((err) => {
         console.error("AI Detection Settings API Error :", err);
@@ -338,7 +339,7 @@ export default function Settings() {
     setSavingKey(key);
 
     axios
-      .put("http://localhost:5000/ai-detection-settings", { [key]: value }, { params: settingsParams })
+      .put(`${API_BASE_URL}/ai-detection-settings`, { [key]: value }, { params: settingsParams })
       .then((res) => {
         setAiDetection(res.data.ai_config);
         emitDataEvent(DATA_EVENTS.SETTINGS_CHANGED);
@@ -361,7 +362,7 @@ export default function Settings() {
     setAiSettingsError(null);
 
     axios
-      .get("http://localhost:5000/company/settings/ai", { params: settingsParams })
+      .get(`${API_BASE_URL}/company/settings/ai`, { params: settingsParams })
       .then((res) => setAiSettings(res.data.settings))
       .catch((err) => {
         console.error("AI Settings API Error :", err);
@@ -396,8 +397,8 @@ export default function Settings() {
     setWaError(null);
 
     const request = targetUserId
-      ? axios.get(`http://localhost:5000/company/users/${targetUserId}/whatsapp-settings`).then((res) => res.data.settings)
-      : axios.get("http://localhost:5000/notifications/settings").then((res) => normalizeCompanyWhatsapp(res.data.settings));
+      ? axios.get(`${API_BASE_URL}/company/users/${targetUserId}/whatsapp-settings`).then((res) => res.data.settings)
+      : axios.get(`${API_BASE_URL}/notifications/settings`).then((res) => normalizeCompanyWhatsapp(res.data.settings));
 
     request
       .then(setWaSettings)
@@ -414,8 +415,8 @@ export default function Settings() {
     const params = targetUserId ? { user_id: targetUserId, limit: 10 } : { limit: 10 };
 
     Promise.all([
-      axios.get("http://localhost:5000/notifications/logs", { params }),
-      axios.get("http://localhost:5000/reports/daily-report/logs", { params }),
+      axios.get(`${API_BASE_URL}/notifications/logs`, { params }),
+      axios.get(`${API_BASE_URL}/reports/daily-report/logs`, { params }),
     ])
       .then(([notifRes, reportRes]) => {
         setNotificationLogs(notifRes.data.logs);
@@ -436,8 +437,8 @@ export default function Settings() {
   const handleDeleteLog = (log) => {
     const key = `${log.type || "daily_report"}-${log.id}`;
     const url = log.type
-      ? `http://localhost:5000/notifications/logs/${log.id}`
-      : `http://localhost:5000/reports/daily-report/logs/${log.id}`;
+      ? `${API_BASE_URL}/notifications/logs/${log.id}`
+      : `${API_BASE_URL}/reports/daily-report/logs/${log.id}`;
 
     setDeletingLogKey(key);
 
@@ -472,7 +473,7 @@ export default function Settings() {
     setGeneratingReport(true);
 
     axios
-      .post("http://localhost:5000/reports/daily-report/generate-now", {
+      .post(`${API_BASE_URL}/reports/daily-report/generate-now`, {
         force: true,
         ...(targetUserId ? { user_id: targetUserId } : {}),
       })
@@ -515,21 +516,21 @@ export default function Settings() {
     setSaving(true);
 
     const requests = [
-      axios.put("http://localhost:5000/settings", settings, { params: settingsParams }),
-      axios.put("http://localhost:5000/company/settings/ai", aiSettings, { params: settingsParams }),
+      axios.put(`${API_BASE_URL}/settings`, settings, { params: settingsParams }),
+      axios.put(`${API_BASE_URL}/company/settings/ai`, aiSettings, { params: settingsParams }),
     ];
 
     if (isAdmin) {
       requests.push(
         targetUserId
-          ? axios.put(`http://localhost:5000/company/users/${targetUserId}/whatsapp-settings`, waSettings)
+          ? axios.put(`${API_BASE_URL}/company/users/${targetUserId}/whatsapp-settings`, waSettings)
           : Promise.all([
-              axios.put("http://localhost:5000/notifications/settings/unknown-alert", {
+              axios.put(`${API_BASE_URL}/notifications/settings/unknown-alert`, {
                 unknown_alert_enabled: waSettings.unknown_alert_enabled,
                 unknown_alert_recipient: waSettings.whatsapp_number || null,
                 unknown_alert_send_image: waSettings.send_unknown_image,
               }),
-              axios.put("http://localhost:5000/notifications/settings/daily-report", {
+              axios.put(`${API_BASE_URL}/notifications/settings/daily-report`, {
                 daily_report_enabled: waSettings.daily_report_enabled,
                 daily_report_time: waSettings.daily_report_time,
                 daily_report_recipient: waSettings.whatsapp_number || null,
@@ -569,16 +570,16 @@ export default function Settings() {
     setResetting(true);
 
     const requests = [
-      axios.post("http://localhost:5000/settings/reset", null, { params: settingsParams }),
-      axios.post("http://localhost:5000/ai-detection-settings/reset", null, { params: settingsParams }),
-      axios.post("http://localhost:5000/company/settings/ai/reset", null, { params: settingsParams }),
+      axios.post(`${API_BASE_URL}/settings/reset`, null, { params: settingsParams }),
+      axios.post(`${API_BASE_URL}/ai-detection-settings/reset`, null, { params: settingsParams }),
+      axios.post(`${API_BASE_URL}/company/settings/ai/reset`, null, { params: settingsParams }),
     ];
 
     if (isAdmin) {
       requests.push(
         targetUserId
-          ? axios.post(`http://localhost:5000/company/users/${targetUserId}/whatsapp-settings/reset`)
-          : axios.post("http://localhost:5000/notifications/settings/reset")
+          ? axios.post(`${API_BASE_URL}/company/users/${targetUserId}/whatsapp-settings/reset`)
+          : axios.post(`${API_BASE_URL}/notifications/settings/reset`)
       );
     }
 
@@ -658,8 +659,8 @@ export default function Settings() {
     formData.append("avatar", file);
 
     const url = targetUserId
-      ? `http://localhost:5000/company/users/${targetUserId}/avatar`
-      : "http://localhost:5000/account/avatar";
+      ? `${API_BASE_URL}/company/users/${targetUserId}/avatar`
+      : `${API_BASE_URL}/account/avatar`;
 
     axios
       .put(url, formData)
@@ -685,8 +686,8 @@ export default function Settings() {
     setAvatarRemoving(true);
 
     const url = targetUserId
-      ? `http://localhost:5000/company/users/${targetUserId}/avatar`
-      : "http://localhost:5000/account/avatar";
+      ? `${API_BASE_URL}/company/users/${targetUserId}/avatar`
+      : `${API_BASE_URL}/account/avatar`;
 
     axios
       .delete(url)

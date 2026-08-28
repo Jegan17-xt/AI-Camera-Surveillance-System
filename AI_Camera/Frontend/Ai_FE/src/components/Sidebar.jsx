@@ -8,6 +8,7 @@ import { hasAnyModule } from "../lib/permissions";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
 import { usePolling } from "../lib/usePolling";
 import { APP_NAME, APP_SUBTITLE } from "../constants/branding";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const MODULE_SYNC_POLL_MS = 15000;
 
@@ -50,7 +51,7 @@ export default function Sidebar({ open, onClose, basePath, extraItems = [], lead
   // SubscriptionPayment.jsx for live pricing/lock state.
   usePolling(() => {
     axios
-      .get("http://localhost:5000/me")
+      .get(`${API_BASE_URL}/me`)
       .then((res) => updateUser(res.data.user))
       .catch(() => {});
   }, MODULE_SYNC_POLL_MS);
@@ -90,7 +91,7 @@ export default function Sidebar({ open, onClose, basePath, extraItems = [], lead
     let cancelled = false;
 
     axios
-      .get("http://localhost:5000/account/cameras/summary")
+      .get(`${API_BASE_URL}/account/cameras/summary`)
       .then((res) => {
         if (!cancelled) setCameraCounts(res.data);
       })

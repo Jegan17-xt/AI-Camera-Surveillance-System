@@ -9,6 +9,7 @@ import AdminModal from "../ui/AdminModal";
 import AdminToast from "../ui/AdminToast";
 import { DATA_EVENTS, emitDataEvent, useDataEvent } from "../../lib/dataEvents";
 import { usePolling } from "../../lib/usePolling";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 // Most of this page's data (other companies' camera status, other admins'
 // activity) is generated in OTHER browser sessions entirely — a Company
@@ -52,7 +53,7 @@ export default function AdminDashboard() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/admin/dashboard")
+      .get(`${API_BASE_URL}/admin/dashboard`)
       .then((res) => setData(res.data))
       .catch((err) => {
         console.error("Admin Dashboard API Error :", err);
@@ -118,7 +119,7 @@ export default function AdminDashboard() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/activity-logs/${deleteTarget.id}`)
+      .delete(`${API_BASE_URL}/activity-logs/${deleteTarget.id}`)
       .then(() => {
         setToast({ type: "success", message: "Activity log deleted." });
         setDeleteTarget(null);
@@ -137,7 +138,7 @@ export default function AdminDashboard() {
     setBulkDeleting(true);
 
     axios
-      .post("http://localhost:5000/activity-logs/bulk-delete", { ids: Array.from(selectedIds) })
+      .post(`${API_BASE_URL}/activity-logs/bulk-delete`, { ids: Array.from(selectedIds) })
       .then(() => {
         setToast({ type: "success", message: "Selected activity logs deleted." });
         setBulkDeleteOpen(false);
@@ -155,7 +156,7 @@ export default function AdminDashboard() {
     setDeletingAll(true);
 
     axios
-      .delete("http://localhost:5000/activity-logs")
+      .delete(`${API_BASE_URL}/activity-logs`)
       .then(() => {
         setToast({ type: "success", message: "All activity logs deleted." });
         setDeleteAllOpen(false);

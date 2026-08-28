@@ -191,6 +191,74 @@ class Camera(Base):
     # Default "1080p" matches every existing camera's pre-this-feature
     # behavior exactly (always the main/full-resolution stream).
     stream_quality = Column(String(10), nullable=False, default="1080p")
+    # Site / VPN Gateway Management: which Site (network/access grouping
+    # — see Site below) this camera belongs to. NULL = no Site assigned
+    # (every camera created before this feature, or a company that never
+    # uses Sites at all) — the RTSP connection flow never reads this
+    # column, so a NULL value changes nothing about how a camera
+    # actually connects (see api/cameras.py's _resolve_connection_url,
+    # untouched by this feature). SET NULL (not CASCADE) — deleting a
+    # Site must orphan its cameras back to "No Site", never delete the
+    # camera itself.
+    site_id = Column(Integer, ForeignKey("sites.site_id", ondelete="SET NULL"), nullable=True, index=True)
+
+
+class Site(Base):
+    """Site / VPN Gateway Management. A Site is purely a network/access
+    grouping this app records — the real WireGuard tunnel between this
+    backend's network and the Site's remote camera network runs entirely
+    at infrastructure level (see the module's own docstring in
+    api/sites.py); nothing here opens, configures, or manages a tunnel.
+    `vpn_gateway_ip`/`camera_network` are informational metadata a
+    Company Admin fills in to describe an already-working VPN link, not
+    values this app dials out to establish. Never stores a WireGuard
+    PRIVATE key — see vpn_public_key's own comment below."""
+
+    __tablename__ = "sites"
+
+    site_id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    site_name = Column(String(120), nullable=False)
+    # The WireGuard gateway's tunnel-side address (e.g. "10.50.0.2") —
+    # informational only; nothing in this app connects to this address.
+    vpn_gateway_ip = Column(String(60), nullable=False)
+    # Optional CIDR describing the Site's remote camera subnet (e.g.
+    # "192.168.1.0/24") — display/documentation only, never enforced
+    # against a camera's own camera_ip at connection time.
+    camera_network = Column(String(60), nullable=True)
+    # The WireGuard gateway's PUBLIC key — safe to store in plaintext,
+    # unlike a private key (which this app must NEVER be asked for, see
+    # api/sites.py's validation). Optional: a Site can be recorded before
+    # the gateway's own key material is known.
+    vpn_public_key = Column(Text, nullable=True)
+    # "unknown" | "online" | "offline" — last-known reachability of
+    # vpn_gateway_ip, refreshed only when a Company Admin explicitly
+    # clicks "Check Status" (api/sites.py's check_site_status). Never
+    # updated by a background job and never affects the camera RTSP
+    # connection flow.
+    vpn_status = Column(String(20), nullable=False, default="unknown")
+    vpn_last_checked = Column(String(30), nullable=True)
+    # "Active" | "Inactive" — a Company Admin's own on/off switch for the
+    # Site (deactivation, not deletion). Same string-based convention as
+    # Camera.status/User.status elsewhere in this file.
+    status = Column(String(20), nullable=False, default="Active")
+    created_at = Column(String(30), nullable=False)
+
+
+class SiteUser(Base):
+    """Which Users (role=ROLE_USER) may access one Site — a plain
+    many-to-many association, same shape/purpose as UserPermission above
+    but for Site access instead of module access. A User with no row
+    here for a given site_id simply never sees that Site (see
+    api/sites.py's get_sites_for_customer)."""
+
+    __tablename__ = "site_users"
+    __table_args__ = (UniqueConstraint("site_id", "user_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    site_id = Column(Integer, ForeignKey("sites.site_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(String(30), nullable=False)
 
 
 class NormalCamera(Base):

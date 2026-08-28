@@ -9,6 +9,7 @@ import AdminModal from "../ui/AdminModal";
 import AdminToast from "../ui/AdminToast";
 import { DATA_EVENTS, useDataEvent } from "../../lib/dataEvents";
 import { validatePassword, validatePasswordsMatch, hasNoErrors, INVALID_INPUT_CLASS } from "../../lib/validation";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 function FieldError({ error }) {
   if (!error) return null;
@@ -43,7 +44,7 @@ export default function AdminChangePassword() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/users")
+      .get(`${API_BASE_URL}/users`)
       .then((res) => {
         // The Super Admin can only ever change a Company Admin's own
         // password here — never a Super Admin's (managed from Super
@@ -99,7 +100,7 @@ export default function AdminChangePassword() {
     setUpdating(true);
 
     axios
-      .put(`http://localhost:5000/users/${changeTarget.id}/reset-password`, { password: newPassword })
+      .put(`${API_BASE_URL}/users/${changeTarget.id}/reset-password`, { password: newPassword })
       .then(() => {
         setToast({ type: "success", message: "Password updated successfully." });
         setChangeTarget(null);

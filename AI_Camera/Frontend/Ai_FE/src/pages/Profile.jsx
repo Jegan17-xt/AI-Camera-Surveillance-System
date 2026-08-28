@@ -7,6 +7,7 @@ import Button from "../components/ui/Button";
 import Toast from "../components/ui/Toast";
 import { useAuth } from "../context/AuthContext";
 import { DATA_EVENTS, emitDataEvent } from "../lib/dataEvents";
+import { API_BASE_URL } from "../lib/apiBase";
 import {
   validateTextField,
   validateEmail,
@@ -86,7 +87,7 @@ export default function Profile() {
     setSavingProfile(true);
 
     axios
-      .put("http://localhost:5000/account/profile", {
+      .put(`${API_BASE_URL}/account/profile`, {
         name: profile.name.trim(),
         email: profile.email.trim(),
         username: profile.username.trim(),
@@ -117,7 +118,7 @@ export default function Profile() {
     setSavingPassword(true);
 
     axios
-      .put("http://localhost:5000/account/password", { new_password: newPassword })
+      .put(`${API_BASE_URL}/account/password`, { new_password: newPassword })
       .then(() => {
         setToast({ type: "success", message: "Password updated successfully." });
         setNewPassword("");

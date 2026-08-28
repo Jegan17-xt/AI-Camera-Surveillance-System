@@ -10,6 +10,7 @@ import Toast from "../components/ui/Toast";
 import UserSelect from "../components/ui/UserSelect";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { validateTextField, hasNoErrors, INVALID_INPUT_CLASS } from "../lib/validation";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const emptyForm = {
   camera_name: "",
@@ -50,7 +51,7 @@ export default function NormalCamera() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/company/normal-cameras")
+      .get(`${API_BASE_URL}/company/normal-cameras`)
       .then((res) => setCameras(res.data.cameras || []))
       .catch((err) => {
         console.error("Normal Cameras API Error :", err);
@@ -138,8 +139,8 @@ export default function NormalCamera() {
     };
 
     const request = editTarget
-      ? axios.put(`http://localhost:5000/company/normal-cameras/${editTarget.id}`, payload)
-      : axios.post("http://localhost:5000/company/normal-cameras", payload);
+      ? axios.put(`${API_BASE_URL}/company/normal-cameras/${editTarget.id}`, payload)
+      : axios.post(`${API_BASE_URL}/company/normal-cameras`, payload);
 
     request
       .then(() => {
@@ -163,7 +164,7 @@ export default function NormalCamera() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/company/normal-cameras/${deleteTarget.id}`)
+      .delete(`${API_BASE_URL}/company/normal-cameras/${deleteTarget.id}`)
       .then(() => {
         setToast({ type: "success", message: `${deleteTarget.camera_name} deleted successfully.` });
         return fetchCameras();

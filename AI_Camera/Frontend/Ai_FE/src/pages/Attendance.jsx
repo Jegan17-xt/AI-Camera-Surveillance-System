@@ -13,6 +13,7 @@ import Select from "../components/ui/Select";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
 import { validateDate, todayDateValue } from "../lib/validation";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const toDDMMYYYY = (isoDate) => {
   if (!isoDate) return "";
@@ -56,7 +57,7 @@ export default function Attendance() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/attendance", {
+      .get(`${API_BASE_URL}/attendance`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => {
@@ -78,7 +79,7 @@ export default function Attendance() {
   // response interceptor for the other half of this fix).
   const fetchRegisteredTotal = () =>
     axios
-      .get("http://localhost:5000/registered", {
+      .get(`${API_BASE_URL}/registered`, {
         suppressAuthRedirect: true,
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
@@ -218,7 +219,7 @@ export default function Attendance() {
     setDownloading(true);
 
     axios
-      .get(`http://localhost:5000/attendance/download/${date}`, { responseType: "blob" })
+      .get(`${API_BASE_URL}/attendance/download/${date}`, { responseType: "blob" })
       .then((res) => {
         const blob = new Blob([res.data], { type: "text/csv;charset=utf-8;" });
         const url = URL.createObjectURL(blob);

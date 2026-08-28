@@ -5,6 +5,7 @@ import AdminPageHeader from "../ui/AdminPageHeader";
 import AdminSearchInput from "../ui/AdminSearchInput";
 import AdminCard from "../ui/AdminCard";
 import AdminBadge from "../ui/AdminBadge";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 const formatAmount = (amount) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(amount || 0);
@@ -25,7 +26,7 @@ export default function AdminBillingPaymentHistory() {
     setError(null);
 
     axios
-      .get("http://localhost:5000/payments")
+      .get(`${API_BASE_URL}/payments`)
       .then((res) => setPayments(res.data.payments || []))
       .catch((err) => {
         console.error("Payments API Error :", err);

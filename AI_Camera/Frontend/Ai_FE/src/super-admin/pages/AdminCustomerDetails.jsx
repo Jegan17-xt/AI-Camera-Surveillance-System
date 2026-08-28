@@ -11,6 +11,7 @@ import AdminBadge from "../ui/AdminBadge";
 import AdminToggle from "../ui/AdminToggle";
 import AdminSelect from "../ui/AdminSelect";
 import { DATA_EVENTS, emitDataEvent, useDataEvent } from "../../lib/dataEvents";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   validateTextField,
   validateIPv4,
@@ -337,7 +338,7 @@ export default function AdminCustomerDetails() {
     setError(null);
 
     return axios
-      .get(`http://localhost:5000/users/${id}`)
+      .get(`${API_BASE_URL}/users/${id}`)
       .then((res) => setCustomer(res.data.user))
       .catch((err) => {
         console.error("Customer Details API Error :", err);
@@ -351,7 +352,7 @@ export default function AdminCustomerDetails() {
     setCamerasError(null);
 
     return axios
-      .get(`http://localhost:5000/users/${id}/cameras`)
+      .get(`${API_BASE_URL}/users/${id}/cameras`)
       .then((res) => setCameras(res.data.cameras || []))
       .catch((err) => {
         console.error("Cameras API Error :", err);
@@ -365,7 +366,7 @@ export default function AdminCustomerDetails() {
     setAiConfigError(null);
 
     return axios
-      .get(`http://localhost:5000/users/${id}/ai-config`)
+      .get(`${API_BASE_URL}/users/${id}/ai-config`)
       .then((res) => setAiConfig(res.data.ai_config))
       .catch((err) => {
         console.error("AI Configuration API Error :", err);
@@ -391,7 +392,7 @@ export default function AdminCustomerDetails() {
     setSavingKey(key);
 
     axios
-      .put(`http://localhost:5000/users/${id}/ai-config`, { [key]: value })
+      .put(`${API_BASE_URL}/users/${id}/ai-config`, { [key]: value })
       .then((res) => {
         setAiConfig(res.data.ai_config);
         emitDataEvent(DATA_EVENTS.AI_CONFIG_CHANGED, { customerId: id });
@@ -436,7 +437,7 @@ export default function AdminCustomerDetails() {
     setTestResult(null);
 
     axios
-      .post(`http://localhost:5000/users/${id}/cameras/test-connection`, {
+      .post(`${API_BASE_URL}/users/${id}/cameras/test-connection`, {
         brand: form.brand,
         camera_ip: form.camera_ip,
         username: form.username,
@@ -495,7 +496,7 @@ export default function AdminCustomerDetails() {
     setSaving(true);
 
     axios
-      .post(`http://localhost:5000/users/${id}/cameras`, addForm)
+      .post(`${API_BASE_URL}/users/${id}/cameras`, addForm)
       .then(() => {
         setToast({ type: "success", message: "Camera added successfully." });
         setAddOpen(false);
@@ -562,7 +563,7 @@ export default function AdminCustomerDetails() {
     setSaving(true);
 
     axios
-      .put(`http://localhost:5000/users/${id}/cameras/${editTarget.camera_id}`, editForm)
+      .put(`${API_BASE_URL}/users/${id}/cameras/${editTarget.camera_id}`, editForm)
       .then(() => {
         setToast({ type: "success", message: "Camera updated successfully." });
         setEditTarget(null);
@@ -582,7 +583,7 @@ export default function AdminCustomerDetails() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/users/${id}/cameras/${deleteTarget.camera_id}`)
+      .delete(`${API_BASE_URL}/users/${id}/cameras/${deleteTarget.camera_id}`)
       .then(() => {
         setToast({ type: "success", message: "Camera deleted successfully." });
         // Drop it from the visible list immediately — the delete has

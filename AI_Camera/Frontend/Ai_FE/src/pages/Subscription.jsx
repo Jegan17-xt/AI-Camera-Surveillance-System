@@ -4,6 +4,7 @@ import { CreditCard, Receipt, Loader2, AlertTriangle } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import GlassCard from "../components/ui/GlassCard";
 import StatusBadge from "../components/ui/StatusBadge";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const formatAmount = (amount) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 }).format(amount || 0);
@@ -24,8 +25,8 @@ export default function Subscription() {
     setError(null);
 
     Promise.all([
-      axios.get("http://localhost:5000/account/subscription"),
-      axios.get("http://localhost:5000/account/payments"),
+      axios.get(`${API_BASE_URL}/account/subscription`),
+      axios.get(`${API_BASE_URL}/account/payments`),
     ])
       .then(([subscriptionRes, paymentsRes]) => {
         setSubscription(subscriptionRes.data.subscription);

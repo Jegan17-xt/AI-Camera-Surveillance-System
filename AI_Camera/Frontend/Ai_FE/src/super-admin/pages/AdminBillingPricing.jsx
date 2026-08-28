@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   Loader2,
   AlertTriangle,
@@ -174,8 +175,8 @@ export default function AdminBillingPricing() {
 
     const url =
       currentScope && currentScope !== SCOPE_ALL
-        ? `http://localhost:5000/billing/items?customer_id=${currentScope}`
-        : "http://localhost:5000/billing/items";
+        ? `${API_BASE_URL}/billing/items?customer_id=${currentScope}`
+        : `${API_BASE_URL}/billing/items`;
 
     return axios
       .get(url)
@@ -189,7 +190,7 @@ export default function AdminBillingPricing() {
 
   useEffect(() => {
     axios
-      .get("http://localhost:5000/subscriptions")
+      .get(`${API_BASE_URL}/subscriptions`)
       .then((res) => setAdmins(res.data.subscriptions || []))
       .catch((err) => console.error("Subscriptions API Error :", err));
   }, []);
@@ -277,7 +278,7 @@ export default function AdminBillingPricing() {
     setSaving(true);
 
     const request = isGlobalScope
-      ? axios.put(`http://localhost:5000/billing/items/${editTarget.id}`, {
+      ? axios.put(`${API_BASE_URL}/billing/items/${editTarget.id}`, {
           name: editForm.name.trim(),
           description: editForm.description.trim(),
           category: editForm.category,
@@ -287,7 +288,7 @@ export default function AdminBillingPricing() {
           yearly_discount_percent: editForm.yearly_discount_percent === "" ? null : Number(editForm.yearly_discount_percent),
           enabled: editForm.enabled,
         })
-      : axios.put(`http://localhost:5000/billing/items/${editTarget.id}/override/${scope}`, {
+      : axios.put(`${API_BASE_URL}/billing/items/${editTarget.id}/override/${scope}`, {
           monthly_price: Number(editForm.monthly_price),
           yearly_price: Number(editForm.yearly_price),
           yearly_discount_percent: editForm.yearly_discount_percent === "" ? null : Number(editForm.yearly_discount_percent),
@@ -310,7 +311,7 @@ export default function AdminBillingPricing() {
     if (!window.confirm(`Delete "${item.name}"? This cannot be undone.`)) return;
 
     axios
-      .delete(`http://localhost:5000/billing/items/${item.id}`)
+      .delete(`${API_BASE_URL}/billing/items/${item.id}`)
       .then(() => {
         setToast({ type: "success", message: `${item.name} deleted.` });
         fetchItems(scope);
@@ -325,7 +326,7 @@ export default function AdminBillingPricing() {
     if (!window.confirm(`Reset "${item.name}" back to the global price for ${selectedAdmin.customer_name}?`)) return;
 
     axios
-      .delete(`http://localhost:5000/billing/items/${item.id}/override/${scope}`)
+      .delete(`${API_BASE_URL}/billing/items/${item.id}/override/${scope}`)
       .then(() => {
         setToast({ type: "success", message: `${item.name} reverted to global pricing for ${selectedAdmin.customer_name}.` });
         fetchItems(scope);
@@ -359,7 +360,7 @@ export default function AdminBillingPricing() {
     setAdding(true);
 
     axios
-      .post("http://localhost:5000/billing/items", {
+      .post(`${API_BASE_URL}/billing/items`, {
         item_key: newItem.item_key.trim(),
         category: newItem.category,
         name: newItem.name.trim(),

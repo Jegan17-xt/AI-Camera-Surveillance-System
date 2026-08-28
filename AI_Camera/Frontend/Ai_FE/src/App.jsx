@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import AdminLayout from "./admin/AdminLayout";
 import AdminProtectedRoute from "./admin/AdminProtectedRoute";
 import SubscriptionPayment from "./admin/pages/SubscriptionPayment";
+import SiteManagement from "./admin/pages/SiteManagement";
 import UserCameraOverviewPage from "./admin/pages/UserCameraOverviewPage";
 import UserLayout from "./user/UserLayout";
 import UserProtectedRoute from "./user/UserProtectedRoute";
@@ -117,6 +118,7 @@ export default function App() {
               under /user/* — this is the Company Admin's own billing. */}
           <Route element={<ModuleRoute />}>
             <Route path="subscription-payment" element={<SubscriptionPayment />} />
+            <Route path="sites" element={<SiteManagement />} />
           </Route>
 
           {ModulePortalRoutes()}

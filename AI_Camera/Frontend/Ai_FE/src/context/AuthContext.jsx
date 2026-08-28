@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useReducer, useRef } fro
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { authLog } from "../debugLog";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const AuthContext = createContext(null);
 
@@ -76,7 +77,7 @@ export function AuthProvider({ children }) {
   const verifySession = (logPrefix) => {
     authLog(`${logPrefix}: firing GET /me`);
     axios
-      .get("http://localhost:5000/me")
+      .get(`${API_BASE_URL}/me`)
       .then((res) => {
         authLog(`${logPrefix}: resolved 200`, res.data.user?.email);
         dispatch({ type: "AUTHENTICATED", user: res.data.user });
@@ -190,7 +191,7 @@ export function AuthProvider({ children }) {
   const login = async (email, password, remember) => {
     authLog(`LOGIN: called with email=${email}`);
     try {
-      const res = await axios.post("http://localhost:5000/login", { email, password, remember });
+      const res = await axios.post(`${API_BASE_URL}/login`, { email, password, remember });
       authLog("LOGIN: POST /login resolved 200, dispatching AUTHENTICATED", res.data.user?.email);
       dispatch({ type: "AUTHENTICATED", user: res.data.user });
       authLog("LOGIN: dispatch call has returned (state update is now scheduled)");
@@ -216,7 +217,7 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     authLog("LOGOUT: called");
     try {
-      await axios.post("http://localhost:5000/logout");
+      await axios.post(`${API_BASE_URL}/logout`);
       authLog("LOGOUT: POST /logout resolved 200");
     } catch (err) {
       authLog("LOGOUT: POST /logout rejected", err.response?.status);

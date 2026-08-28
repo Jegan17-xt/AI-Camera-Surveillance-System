@@ -8,6 +8,7 @@ import Modal from "../../components/ui/Modal";
 import Toast from "../../components/ui/Toast";
 import { usePolling } from "../../lib/usePolling";
 import { useAuth } from "../../context/AuthContext";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 // View-only Current Plan / Payment History for the Company Admin, PLUS
 // a "Choose Billing Cycle & Pay" flow over every catalog item — every
@@ -134,8 +135,8 @@ export default function SubscriptionPayment() {
     setError(null);
 
     return Promise.all([
-      axios.get("http://localhost:5000/company/subscription"),
-      axios.get("http://localhost:5000/company/payments"),
+      axios.get(`${API_BASE_URL}/company/subscription`),
+      axios.get(`${API_BASE_URL}/company/payments`),
     ])
       .then(([subscriptionRes, paymentsRes]) => {
         setSubscription(subscriptionRes.data.subscription);
@@ -164,7 +165,7 @@ export default function SubscriptionPayment() {
     if (!isPoll) setCheckoutLoading(true);
 
     return axios
-      .get("http://localhost:5000/company/checkout-context")
+      .get(`${API_BASE_URL}/company/checkout-context`)
       .then((res) => {
         const items = res.data.items || [];
         setCheckoutItems(items);
@@ -222,7 +223,7 @@ export default function SubscriptionPayment() {
     setPayError(null);
 
     axios
-      .post("http://localhost:5000/company/checkout", {
+      .post(`${API_BASE_URL}/company/checkout`, {
         item_keys: billedItems.map((i) => i.item_key),
         billing_cycle: billingCycle,
       })
@@ -237,7 +238,7 @@ export default function SubscriptionPayment() {
         // the sidebar reflects newly-purchased modules without a
         // re-login.
         axios
-          .get("http://localhost:5000/me")
+          .get(`${API_BASE_URL}/me`)
           .then((res) => updateUser(res.data.user))
           .catch(() => {});
       })

@@ -10,6 +10,7 @@ import { useAdminTheme } from "../context/AdminThemeContext";
 import { useAdminBranding } from "../context/AdminBrandingContext";
 import { DATA_EVENTS, emitDataEvent } from "../../lib/dataEvents";
 import { validateTextField, validateFileUpload, INVALID_INPUT_CLASS } from "../../lib/validation";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 const inputClass =
   "w-full rounded-md admin-panel px-3.5 py-2.5 text-sm text-ink-100 placeholder:text-ink-500 outline-none focus:border-admin-accent/50 focus:ring-2 focus:ring-admin-accent/20";
@@ -77,7 +78,7 @@ export default function AdminSystemSettings() {
     setSavingName(true);
 
     axios
-      .put("http://localhost:5000/branding/app-name", { name: trimmedName })
+      .put(`${API_BASE_URL}/branding/app-name`, { name: trimmedName })
       .then((res) => {
         setBranding((prev) => ({ ...prev, app_name: res.data.app_name }));
         emitDataEvent(DATA_EVENTS.BRANDING_CHANGED);
@@ -113,7 +114,7 @@ export default function AdminSystemSettings() {
     formData.append("logo", file);
 
     axios
-      .put("http://localhost:5000/branding/logo", formData)
+      .put(`${API_BASE_URL}/branding/logo`, formData)
       .then((res) => {
         setBranding({ app_name: res.data.app_name, logo_url: res.data.logo_url });
         emitDataEvent(DATA_EVENTS.BRANDING_CHANGED);
@@ -129,7 +130,7 @@ export default function AdminSystemSettings() {
     setLogoRemoving(true);
 
     axios
-      .delete("http://localhost:5000/branding/logo")
+      .delete(`${API_BASE_URL}/branding/logo`)
       .then((res) => {
         setBranding({ app_name: res.data.app_name, logo_url: res.data.logo_url });
         emitDataEvent(DATA_EVENTS.BRANDING_CHANGED);

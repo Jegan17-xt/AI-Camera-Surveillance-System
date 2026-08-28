@@ -12,6 +12,7 @@ import AdminBadge from "../ui/AdminBadge";
 import AdminSelect from "../ui/AdminSelect";
 import AdminToggle from "../ui/AdminToggle";
 import { DATA_EVENTS, emitDataEvent } from "../../lib/dataEvents";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   validateTextField,
   validateEmail,
@@ -80,7 +81,7 @@ export default function AdminCustomers() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/users")
+      .get(`${API_BASE_URL}/users`)
       .then((res) => {
         // This page manages Company Admin accounts only — neither Super
         // Admins (managed elsewhere) nor individual Users (managed only
@@ -116,7 +117,7 @@ export default function AdminCustomers() {
     setSaving(true);
 
     axios
-      .post("http://localhost:5000/users", { ...addForm, role: "Company Admin", status: "Active" })
+      .post(`${API_BASE_URL}/users`, { ...addForm, role: "Company Admin", status: "Active" })
       .then(() => {
         setToast({ type: "success", message: "Company Admin created successfully." });
         setAddOpen(false);
@@ -149,8 +150,8 @@ export default function AdminCustomers() {
     // Payment page use), merged into one row per module for the Module
     // Access & Billing grid below.
     Promise.all([
-      axios.get(`http://localhost:5000/users/${customer.id}/permissions`),
-      axios.get("http://localhost:5000/billing/items", { params: { customer_id: customer.id } }),
+      axios.get(`${API_BASE_URL}/users/${customer.id}/permissions`),
+      axios.get(`${API_BASE_URL}/billing/items`, { params: { customer_id: customer.id } }),
     ])
       .then(([permRes, itemsRes]) => {
         const priceByModuleKey = Object.fromEntries(
@@ -196,7 +197,7 @@ export default function AdminCustomers() {
     setSaving(true);
 
     try {
-      await axios.put(`http://localhost:5000/users/${editTarget.id}`, {
+      await axios.put(`${API_BASE_URL}/users/${editTarget.id}`, {
         name: editForm.name,
         email: editForm.email,
         username: editForm.username,
@@ -205,11 +206,11 @@ export default function AdminCustomers() {
       });
 
       if (editForm.status !== editTarget.status) {
-        await axios.put(`http://localhost:5000/users/${editTarget.id}/status`, { status: editForm.status });
+        await axios.put(`${API_BASE_URL}/users/${editTarget.id}/status`, { status: editForm.status });
       }
 
       const moduleKeys = permissions.filter((p) => p.granted).map((p) => p.module_key);
-      await axios.put(`http://localhost:5000/users/${editTarget.id}/permissions`, { module_keys: moduleKeys });
+      await axios.put(`${API_BASE_URL}/users/${editTarget.id}/permissions`, { module_keys: moduleKeys });
 
       setToast({ type: "success", message: "Company Admin updated successfully." });
       setEditTarget(null);
@@ -233,7 +234,7 @@ export default function AdminCustomers() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/users/${deleteTarget.id}`)
+      .delete(`${API_BASE_URL}/users/${deleteTarget.id}`)
       .then(() => {
         setToast({ type: "success", message: "Company Admin deleted successfully." });
         setDeleteTarget(null);

@@ -108,6 +108,7 @@ MODULES = [
     ("attendance", "Attendance"),
     ("reports", "Reports"),
     ("settings", "Settings"),
+    ("site_management", "Sites / VPN Management"),
 ]
 
 # Dashboard and Subscription & Payment — a Company Admin's only way
@@ -128,6 +129,7 @@ _NEWLY_ADDED_COMPANY_ADMIN_MODULE_KEYS = (
     "subscription_payment",
     "unknown_person_analytics",
     "normal_camera",
+    "site_management",
 )
 
 

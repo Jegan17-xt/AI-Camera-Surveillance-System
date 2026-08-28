@@ -65,6 +65,18 @@ from api.cameras import (
     CONNECTION_FAILURE_MESSAGE,
 )
 from api.camera_quota import get_admin_camera_summary, get_user_camera_summary
+from api.sites import (
+    get_sites_for_customer,
+    get_site,
+    create_site,
+    update_site,
+    delete_site,
+    set_site_status,
+    get_site_access,
+    set_site_access,
+    check_site_status,
+    user_has_site_access,
+)
 from api.ai_config import (
     get_ai_config,
     update_ai_config,
@@ -2953,6 +2965,22 @@ def company_cameras_create():
     # be spoofed).
     owner_user_id = current_user["id"] if current_user["role"] == ROLE_USER else data.get("owner_user_id")
 
+    # Site / VPN Gateway Management: "" (the frontend's "No Site" option)
+    # normalizes to None, same convention owner_user_id already uses. A
+    # User caller's requested site_id must additionally be one they were
+    # actually granted (SiteUser) — never trusted blind just because the
+    # picker happened to only show granted Sites; a Company Admin caller
+    # is only restricted to their own company's Sites, which add_camera's
+    # own _validate_site_id already enforces.
+    site_id = data.get("site_id") or None
+    if site_id is not None:
+        try:
+            site_id = int(site_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "message": "Invalid site."}), 400
+        if current_user["role"] == ROLE_USER and not user_has_site_access(current_user["id"], site_id):
+            return jsonify({"success": False, "message": "You do not have access to the selected site."}), 403
+
     camera, error = add_camera(
         get_tenant_id(current_user),
         data.get("camera_name"),
@@ -2966,6 +2994,7 @@ def company_cameras_create():
         data.get("camera_location"),
         owner_user_id=owner_user_id,
         stream_quality=data.get("stream_quality"),
+        site_id=site_id,
     )
 
     if error:
@@ -3002,6 +3031,22 @@ def company_cameras_update(camera_id):
         extra = {"owner_user_id": data.get("owner_user_id")} if "owner_user_id" in data else {}
     if "stream_quality" in data:
         extra["stream_quality"] = data.get("stream_quality")
+
+    # Site / VPN Gateway Management — same "" -> None normalization and
+    # per-User access re-check as company_cameras_create above. Only
+    # touched when the request body actually includes the key (_UNSET
+    # sentinel default in update_camera means "leave the existing Site
+    # alone" otherwise).
+    if "site_id" in data:
+        site_id = data.get("site_id") or None
+        if site_id is not None:
+            try:
+                site_id = int(site_id)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "message": "Invalid site."}), 400
+            if current_user["role"] == ROLE_USER and not user_has_site_access(current_user["id"], site_id):
+                return jsonify({"success": False, "message": "You do not have access to the selected site."}), 403
+        extra["site_id"] = site_id
 
     camera, error = update_camera(
         camera_id,
@@ -3159,6 +3204,209 @@ def company_cameras_set_detection(camera_id):
     )
 
     return jsonify({"success": True, "camera": camera})
+
+
+# ==============================
+# Site / VPN Gateway Management API
+# ==============================
+# See api/sites.py's own module docstring for what a Site is (a
+# network/access grouping this app RECORDS) and, just as importantly,
+# what it is NOT (never the thing that opens/manages the actual
+# WireGuard tunnel, never a place a private key is stored or returned).
+#
+# Every mutating route here is Company-Admin-only (company_admin_required
+# + module_required("site_management") — a User can never hold that
+# module at all, see api/company_users.py's GRANTABLE_USER_MODULE_KEYS).
+# The list endpoint is the one exception: a User needs it too, to
+# populate the Camera Management "Site / Office" picker with exactly
+# the Sites they've been granted — see company_sites_list's own
+# docstring for why that stays outside the module gate.
+@api.route("/company/sites", methods=["GET"])
+@company_or_user_required
+def company_sites_list():
+    """Company Admin sees every Site in their company, any status (the
+    Site Management table + the "Site / Office" picker, filtered to
+    Active-only client-side for the latter). A User sees only the Sites
+    they've been explicitly granted (SiteUser) — this is also what
+    powers their own Camera Management "Site / Office" picker, which is
+    why this one route is deliberately NOT behind
+    module_required("site_management"): a User can never be granted
+    that module (Company-Admin-only), but still needs this list to add
+    a camera."""
+
+    current_user = get_current_user()
+    tenant_id = get_tenant_id(current_user)
+
+    user_id = current_user["id"] if current_user["role"] == ROLE_USER else None
+    sites = get_sites_for_customer(tenant_id, user_id=user_id)
+
+    return jsonify({"total": len(sites), "sites": sites})
+
+
+@api.route("/company/sites", methods=["POST"])
+@company_admin_required
+@module_required("site_management")
+@rate_limited("site_write", max_attempts=20, window_seconds=60)
+def company_sites_create():
+
+    current_user = get_current_user()
+    data = request.get_json(silent=True) or {}
+
+    site, error = create_site(
+        get_tenant_id(current_user),
+        data.get("site_name"),
+        data.get("vpn_gateway_ip"),
+        data.get("camera_network"),
+        data.get("vpn_public_key"),
+    )
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    log_activity(
+        current_user["name"], "Site Added", details=site["site_name"], user_id=current_user["id"],
+        target_type="site", target_id=site["site_id"], company_id=get_tenant_id(current_user),
+    )
+
+    return jsonify({"success": True, "site": site}), 201
+
+
+@api.route("/company/sites/<int:site_id>", methods=["PUT"])
+@company_admin_required
+@module_required("site_management")
+@rate_limited("site_write", max_attempts=20, window_seconds=60)
+def company_sites_update(site_id):
+
+    current_user = get_current_user()
+    data = request.get_json(silent=True) or {}
+
+    site, error = update_site(
+        site_id,
+        get_tenant_id(current_user),
+        data.get("site_name"),
+        data.get("vpn_gateway_ip"),
+        data.get("camera_network"),
+        data.get("vpn_public_key"),
+    )
+
+    if error:
+        status_code = 404 if error == "Site not found." else 400
+        return jsonify({"success": False, "message": error}), status_code
+
+    log_activity(
+        current_user["name"], "Site Updated", details=site["site_name"], user_id=current_user["id"],
+        target_type="site", target_id=site_id, company_id=get_tenant_id(current_user),
+    )
+
+    return jsonify({"success": True, "site": site})
+
+
+@api.route("/company/sites/<int:site_id>", methods=["DELETE"])
+@company_admin_required
+@module_required("site_management")
+def company_sites_delete(site_id):
+
+    current_user = get_current_user()
+    tenant_id = get_tenant_id(current_user)
+
+    site = get_site(site_id, tenant_id)
+    deleted = delete_site(site_id, tenant_id)
+
+    if not deleted:
+        return jsonify({"success": False, "message": "Site not found."}), 404
+
+    log_activity(
+        current_user["name"], "Site Deleted",
+        details=site["site_name"] if site else str(site_id),
+        user_id=current_user["id"],
+        target_type="site", target_id=site_id, company_id=tenant_id,
+    )
+
+    return jsonify({"success": True, "message": "Site deleted successfully."})
+
+
+@api.route("/company/sites/<int:site_id>/status", methods=["PUT"])
+@company_admin_required
+@module_required("site_management")
+def company_sites_set_status(site_id):
+
+    current_user = get_current_user()
+    tenant_id = get_tenant_id(current_user)
+
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+
+    site, error = set_site_status(site_id, tenant_id, status)
+
+    if error:
+        status_code = 404 if error == "Site not found." else 400
+        return jsonify({"success": False, "message": error}), status_code
+
+    log_activity(
+        current_user["name"],
+        "Site Activated" if status == "Active" else "Site Deactivated",
+        details=site["site_name"], user_id=current_user["id"],
+        target_type="site", target_id=site_id, company_id=tenant_id,
+    )
+
+    return jsonify({"success": True, "site": site})
+
+
+@api.route("/company/sites/<int:site_id>/access", methods=["GET"])
+@company_admin_required
+@module_required("site_management")
+def company_sites_get_access(site_id):
+
+    current_user = get_current_user()
+
+    access, error = get_site_access(site_id, get_tenant_id(current_user))
+
+    if error:
+        return jsonify({"success": False, "message": error}), 404
+
+    return jsonify({"success": True, **access})
+
+
+@api.route("/company/sites/<int:site_id>/access", methods=["PUT"])
+@company_admin_required
+@module_required("site_management")
+def company_sites_set_access(site_id):
+
+    current_user = get_current_user()
+    tenant_id = get_tenant_id(current_user)
+    data = request.get_json(silent=True) or {}
+
+    access, error = set_site_access(site_id, tenant_id, data.get("user_ids"))
+
+    if error:
+        status_code = 404 if error == "Site not found." else 400
+        return jsonify({"success": False, "message": error}), status_code
+
+    site = get_site(site_id, tenant_id)
+    log_activity(
+        current_user["name"], "Site Access Updated",
+        details=site["site_name"] if site else str(site_id),
+        user_id=current_user["id"],
+        target_type="site", target_id=site_id, company_id=tenant_id,
+    )
+
+    return jsonify({"success": True, **access})
+
+
+@api.route("/company/sites/<int:site_id>/check-status", methods=["POST"])
+@company_admin_required
+@module_required("site_management")
+@rate_limited("site_check_status", max_attempts=10, window_seconds=60)
+def company_sites_check_status(site_id):
+
+    current_user = get_current_user()
+
+    site, error = check_site_status(site_id, get_tenant_id(current_user))
+
+    if error:
+        return jsonify({"success": False, "message": error}), 404
+
+    return jsonify({"success": True, "site": site})
 
 
 # ==============================

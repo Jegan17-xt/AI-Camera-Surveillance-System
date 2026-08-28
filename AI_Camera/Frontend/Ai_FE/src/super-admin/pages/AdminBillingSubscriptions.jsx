@@ -9,6 +9,7 @@ import AdminModal from "../ui/AdminModal";
 import AdminToast from "../ui/AdminToast";
 import AdminBadge from "../ui/AdminBadge";
 import AdminSelect from "../ui/AdminSelect";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 const inputClass =
   "w-full rounded-md admin-panel px-3.5 py-2.5 text-sm text-ink-100 placeholder:text-ink-500 outline-none focus:border-admin-accent/50 focus:ring-2 focus:ring-admin-accent/20";
@@ -51,7 +52,7 @@ export default function AdminBillingSubscriptions() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/subscriptions")
+      .get(`${API_BASE_URL}/subscriptions`)
       .then((res) => setCompanies(res.data.subscriptions || []))
       .catch((err) => {
         console.error("Subscriptions API Error :", err);
@@ -94,7 +95,7 @@ export default function AdminBillingSubscriptions() {
     setSaving(true);
 
     axios
-      .put(`http://localhost:5000/users/${editTarget.customer_id}/subscription`, editForm)
+      .put(`${API_BASE_URL}/users/${editTarget.customer_id}/subscription`, editForm)
       .then(() => {
         setToast({ type: "success", message: "Subscription updated successfully." });
         closeEdit();

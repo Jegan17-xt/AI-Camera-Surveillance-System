@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import axios from "axios";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   ArrowLeft,
   Building2,
@@ -64,7 +65,7 @@ export default function AdminCompanyDetails() {
     setError(null);
 
     return axios
-      .get(`http://localhost:5000/admin-overview/companies/${id}`)
+      .get(`${API_BASE_URL}/admin-overview/companies/${id}`)
       .then((res) => {
         setOverview(res.data);
         setLimitInput(res.data.storage_limit_gb ?? "");
@@ -84,7 +85,7 @@ export default function AdminCompanyDetails() {
     // Subscription & Payment page lists from, filtered down to this one
     // company — no separate single-company subscription route exists yet.
     axios
-      .get("http://localhost:5000/subscriptions")
+      .get(`${API_BASE_URL}/subscriptions`)
       .then((res) => {
         const match = (res.data.subscriptions || []).find((s) => String(s.customer_id) === String(id));
         setSubscriptionStatus(match ? match.status : null);
@@ -97,7 +98,7 @@ export default function AdminCompanyDetails() {
     setBillingError(null);
 
     axios
-      .get(`http://localhost:5000/billing/overview/${id}`)
+      .get(`${API_BASE_URL}/billing/overview/${id}`)
       .then((res) => setBilling(res.data))
       .catch((err) => {
         console.error("Billing Detail API Error :", err);
@@ -113,7 +114,7 @@ export default function AdminCompanyDetails() {
     const value = limitInput === "" ? null : Number(limitInput);
 
     axios
-      .put(`http://localhost:5000/admin-overview/companies/${id}/storage-limit`, { storage_limit_gb: value })
+      .put(`${API_BASE_URL}/admin-overview/companies/${id}/storage-limit`, { storage_limit_gb: value })
       .then((res) => {
         setOverview((prev) => ({ ...prev, ...res.data }));
         setToast({ type: "success", message: "Storage limit updated." });
@@ -131,7 +132,7 @@ export default function AdminCompanyDetails() {
     const value = cameraLimitInput === "" ? null : Number(cameraLimitInput);
 
     axios
-      .put(`http://localhost:5000/admin-overview/companies/${id}/camera-limit`, { camera_limit: value })
+      .put(`${API_BASE_URL}/admin-overview/companies/${id}/camera-limit`, { camera_limit: value })
       .then((res) => {
         setOverview((prev) => ({ ...prev, ...res.data }));
         setToast({ type: "success", message: "Camera limit updated." });

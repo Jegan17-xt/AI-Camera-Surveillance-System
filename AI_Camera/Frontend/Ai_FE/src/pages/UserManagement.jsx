@@ -9,6 +9,7 @@ import StatusBadge from "../components/ui/StatusBadge";
 import Modal from "../components/ui/Modal";
 import Toast from "../components/ui/Toast";
 import { DATA_EVENTS, emitDataEvent } from "../lib/dataEvents";
+import { API_BASE_URL } from "../lib/apiBase";
 import {
   validateTextField,
   validateEmail,
@@ -68,7 +69,7 @@ export default function UserManagement() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/company/users")
+      .get(`${API_BASE_URL}/company/users`)
       .then((res) => setUsers(res.data.users || []))
       .catch((err) => {
         console.error("Company Users API Error :", err);
@@ -88,7 +89,7 @@ export default function UserManagement() {
 
   const fetchAdminQuota = () => {
     return axios
-      .get("http://localhost:5000/company/cameras/quota")
+      .get(`${API_BASE_URL}/company/cameras/quota`)
       .then((res) => setAdminQuota(res.data.admin))
       .catch(() => setAdminQuota(null));
   };
@@ -155,13 +156,13 @@ export default function UserManagement() {
     setFormSaving(true);
 
     const request = editTarget
-      ? axios.put(`http://localhost:5000/company/users/${editTarget.id}`, {
+      ? axios.put(`${API_BASE_URL}/company/users/${editTarget.id}`, {
           name: form.name.trim(),
           email: form.email.trim(),
           username: form.username.trim(),
           phone_number: form.phone_number.trim(),
         })
-      : axios.post("http://localhost:5000/company/users", {
+      : axios.post(`${API_BASE_URL}/company/users`, {
           name: form.name.trim(),
           email: form.email.trim(),
           username: form.username.trim(),
@@ -190,7 +191,7 @@ export default function UserManagement() {
     setStatusTargetId(user.id);
 
     axios
-      .put(`http://localhost:5000/company/users/${user.id}/status`, {
+      .put(`${API_BASE_URL}/company/users/${user.id}/status`, {
         status: user.status === "Active" ? "Inactive" : "Active",
       })
       .then(() => {
@@ -214,7 +215,7 @@ export default function UserManagement() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/company/users/${deleteTarget.id}`)
+      .delete(`${API_BASE_URL}/company/users/${deleteTarget.id}`)
       .then(() => {
         setToast({ type: "success", message: `${deleteTarget.name} deleted successfully.` });
         emitDataEvent(DATA_EVENTS.COMPANY_USERS_CHANGED);
@@ -253,7 +254,7 @@ export default function UserManagement() {
     setResetSaving(true);
 
     axios
-      .put(`http://localhost:5000/company/users/${resetTarget.id}/reset-password`, { password: resetPassword })
+      .put(`${API_BASE_URL}/company/users/${resetTarget.id}/reset-password`, { password: resetPassword })
       .then(() => {
         setToast({ type: "success", message: `Password reset for ${resetTarget.name}.` });
         setResetTarget(null);
@@ -285,7 +286,7 @@ export default function UserManagement() {
     const camera_limit = cameraLimitInput === "" ? null : Number(cameraLimitInput);
 
     axios
-      .put(`http://localhost:5000/company/users/${cameraLimitTarget.id}/camera-limit`, { camera_limit })
+      .put(`${API_BASE_URL}/company/users/${cameraLimitTarget.id}/camera-limit`, { camera_limit })
       .then(() => {
         setToast({ type: "success", message: `Camera limit updated for ${cameraLimitTarget.name}.` });
         setCameraLimitTarget(null);
@@ -310,7 +311,7 @@ export default function UserManagement() {
     setPermLoading(true);
 
     axios
-      .get(`http://localhost:5000/company/users/${user.id}/permissions`)
+      .get(`${API_BASE_URL}/company/users/${user.id}/permissions`)
       .then((res) => setPermissions(res.data.permissions || []))
       .catch(() => setToast({ type: "error", message: "Failed to load permissions." }))
       .finally(() => setPermLoading(false));
@@ -328,7 +329,7 @@ export default function UserManagement() {
     const moduleKeys = permissions.filter((p) => p.granted).map((p) => p.module_key);
 
     axios
-      .put(`http://localhost:5000/company/users/${permTarget.id}/permissions`, { module_keys: moduleKeys })
+      .put(`${API_BASE_URL}/company/users/${permTarget.id}/permissions`, { module_keys: moduleKeys })
       .then(() => {
         setToast({ type: "success", message: `Permissions updated for ${permTarget.name}.` });
         setPermTarget(null);

@@ -15,6 +15,7 @@ import { validateTextField, validateFileUpload, hasNoErrors, INVALID_INPUT_CLASS
 import { useAuth } from "../context/AuthContext";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { hasModule } from "../lib/permissions";
+import { API_BASE_URL } from "../lib/apiBase";
 
 // Backend/api/registered.py's MIN_IMAGES must stay in sync with this —
 // independent constants in different languages, not a shared value.
@@ -138,7 +139,7 @@ export default function RegisteredPersons() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/registered", {
+      .get(`${API_BASE_URL}/registered`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => {
@@ -255,7 +256,7 @@ export default function RegisteredPersons() {
     const submittedName = addForm.name.trim();
 
     axios
-      .post("http://localhost:5000/registered", formData, { timeout: 180000 })
+      .post(`${API_BASE_URL}/registered`, formData, { timeout: 180000 })
       .then(() => {
         setToast({ type: "success", message: `${submittedName} registered successfully.` });
         setAddOpen(false);
@@ -270,7 +271,7 @@ export default function RegisteredPersons() {
         // before reporting failure, so a slow-but-successful save is
         // never shown to the user as a failure.
         return axios
-          .get("http://localhost:5000/registered")
+          .get(`${API_BASE_URL}/registered`)
           .then((res) => {
             const persons = res.data.persons || [];
             setPersons(persons);
@@ -323,7 +324,7 @@ export default function RegisteredPersons() {
     setEditLoadingImages(true);
 
     axios
-      .get(`http://localhost:5000/registered/${encodeURIComponent(person.name)}/images`)
+      .get(`${API_BASE_URL}/registered/${encodeURIComponent(person.name)}/images`)
       .then((res) => setEditExistingImages(res.data.images || []))
       .catch((err) => {
         console.error("Get Registered Person Images API Error :", err);
@@ -397,7 +398,7 @@ export default function RegisteredPersons() {
     const finalName = editForm.name.trim();
 
     axios
-      .put(`http://localhost:5000/registered/${encodeURIComponent(editTarget.name)}`, formData, { timeout: 180000 })
+      .put(`${API_BASE_URL}/registered/${encodeURIComponent(editTarget.name)}`, formData, { timeout: 180000 })
       .then(() => {
         setToast({ type: "success", message: `${finalName} updated successfully.` });
         setEditTarget(null);
@@ -409,7 +410,7 @@ export default function RegisteredPersons() {
         // update failed server-side under real load, so re-check the
         // real state before reporting failure.
         return axios
-          .get("http://localhost:5000/registered")
+          .get(`${API_BASE_URL}/registered`)
           .then((res) => {
             const persons = res.data.persons || [];
             setPersons(persons);
@@ -439,7 +440,7 @@ export default function RegisteredPersons() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/registered/${encodeURIComponent(deleteTarget.name)}`)
+      .delete(`${API_BASE_URL}/registered/${encodeURIComponent(deleteTarget.name)}`)
       .then(() => {
         setToast({ type: "success", message: `${deleteTarget.name} deleted successfully.` });
         emitDataEvent(DATA_EVENTS.REGISTERED_PERSONS_CHANGED);

@@ -6,6 +6,7 @@ import StatCard from "./StatCard";
 import StatusBadge from "./ui/StatusBadge";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
 import { usePolling } from "../lib/usePolling";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const POLL_MS = 5000;
 
@@ -28,7 +29,7 @@ export default function UserCameraOverview() {
 
   const fetchOverview = useCallback(() => {
     return axios
-      .get("http://localhost:5000/dashboard/user-camera-overview")
+      .get(`${API_BASE_URL}/dashboard/user-camera-overview`)
       .then((res) => setData(res.data))
       .catch((err) => {
         console.error("User & Camera Overview API Error :", err);

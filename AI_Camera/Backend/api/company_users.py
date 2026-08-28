@@ -57,16 +57,19 @@ def _serialize_user_with_camera_quota(user):
 # Every module a User's own portal (/user/*) actually routes — see
 # Frontend/src/App.jsx's ModulePortalRoutes() and constants/modules.js,
 # the exact same shared page set the Company Admin portal (/admin/*)
-# mounts. A Company Admin may grant a User any subset of these. Two
-# system modules are deliberately never included here, both stripped a
+# mounts. A Company Admin may grant a User any subset of these. Three
+# system modules are deliberately never included here, all stripped a
 # second time in update_company_user_permissions below, defense-in-depth,
-# so no tampered request can ever grant either:
+# so no tampered request can ever grant any of them:
 #   - subscription_payment — Company Admin's own billing, no /user/*
 #     route at all.
 #   - user_management — managing this company's OTHER Users/their
 #     credentials is Company-Admin-only; the /user-management page and
 #     /company/users* API keep working for Company Admin exactly as
 #     before, a User account just can never be granted access to it.
+#   - site_management — Site/VPN Gateway CRUD and access management is
+#     Company-Admin-only (see api/sites.py); a User's own visibility into
+#     Sites comes from SiteUser assignment, never from this module.
 GRANTABLE_USER_MODULE_KEYS = {
     "dashboard",
     "live_camera",
@@ -298,13 +301,14 @@ def update_company_user_permissions(parent_admin_id, user_id, module_keys):
     # displayed a checkbox for.
     clean_keys |= set(get_user_module_keys(user_id)) & _LEGACY_PRESERVED_MODULE_KEYS
 
-    # subscription_payment and user_management must NEVER reach a User,
-    # even via a tampered module_keys payload — both are already excluded
-    # from GRANTABLE_USER_MODULE_KEYS above, but stripped again here,
-    # unconditionally, as the last line of defense before this ever hits
-    # the database. This also cleans up either key on the next save for
-    # any User who happened to hold one already.
-    clean_keys -= {"subscription_payment", "user_management"}
+    # subscription_payment, user_management, and site_management must
+    # NEVER reach a User, even via a tampered module_keys payload — all
+    # three are already excluded from GRANTABLE_USER_MODULE_KEYS above,
+    # but stripped again here, unconditionally, as the last line of
+    # defense before this ever hits the database. This also cleans up
+    # any of these keys on the next save for a User who happened to hold
+    # one already.
+    clean_keys -= {"subscription_payment", "user_management", "site_management"}
 
     set_user_permissions(user_id, sorted(clean_keys))
 

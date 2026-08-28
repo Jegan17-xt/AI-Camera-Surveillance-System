@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "../lib/apiBase";
 import {
   FileDown,
   FileText,
@@ -69,7 +70,7 @@ export default function Reports() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/reports", {
+      .get(`${API_BASE_URL}/reports`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => {
@@ -112,7 +113,7 @@ export default function Reports() {
     setViewLoading(true);
 
     axios
-      .get(`http://localhost:5000/reports/view/${encodeURIComponent(report.file_name)}`, {
+      .get(`${API_BASE_URL}/reports/view/${encodeURIComponent(report.file_name)}`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => {
@@ -131,7 +132,7 @@ export default function Reports() {
     setDownloadingFile(report.file_name);
 
     axios
-      .get(`http://localhost:5000/reports/download/${encodeURIComponent(report.file_name)}`, {
+      .get(`${API_BASE_URL}/reports/download/${encodeURIComponent(report.file_name)}`, {
         responseType: "blob",
       })
       .then((res) => {
@@ -187,7 +188,7 @@ export default function Reports() {
     setExporting((prev) => ({ ...prev, [format]: true }));
 
     axios
-      .get(`http://localhost:5000/attendance/export/${format}?${params.toString()}`, {
+      .get(`${API_BASE_URL}/attendance/export/${format}?${params.toString()}`, {
         responseType: "blob",
       })
       .then((res) => {

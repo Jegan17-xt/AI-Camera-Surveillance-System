@@ -11,6 +11,7 @@ import Toast from "../components/ui/Toast";
 import UserScopeSelector from "../components/ui/UserScopeSelector";
 import { useSelectedUser } from "../context/SelectedUserContext";
 import { DATA_EVENTS, emitDataEvent } from "../lib/dataEvents";
+import { API_BASE_URL } from "../lib/apiBase";
 
 export default function UnknownPersons() {
   const { selectedUserId } = useSelectedUser();
@@ -38,7 +39,7 @@ export default function UnknownPersons() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/unknown-persons", {
+      .get(`${API_BASE_URL}/unknown-persons`, {
         params: selectedUserId !== null ? { user_id: selectedUserId } : undefined,
       })
       .then((res) => {
@@ -101,7 +102,7 @@ export default function UnknownPersons() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/unknown/${encodeURIComponent(deleteTarget.id)}`)
+      .delete(`${API_BASE_URL}/unknown/${encodeURIComponent(deleteTarget.id)}`)
       .then(() => {
         setToast({ type: "success", message: `${deleteTarget.id} deleted successfully.` });
         emitDataEvent(DATA_EVENTS.UNKNOWN_PERSONS_CHANGED);
@@ -125,7 +126,7 @@ export default function UnknownPersons() {
     setBulkDeleting(true);
 
     axios
-      .post("http://localhost:5000/unknown-persons/bulk-delete", { ids })
+      .post(`${API_BASE_URL}/unknown-persons/bulk-delete`, { ids })
       .then(() => {
         setToast({ type: "success", message: `${ids.length} unknown person(s) deleted successfully.` });
         setSelectedIds(new Set());
@@ -144,7 +145,7 @@ export default function UnknownPersons() {
     setDeletingAll(true);
 
     axios
-      .delete("http://localhost:5000/unknown-persons")
+      .delete(`${API_BASE_URL}/unknown-persons`)
       .then(() => {
         setToast({ type: "success", message: "All unknown persons deleted successfully." });
         setSelectedIds(new Set());

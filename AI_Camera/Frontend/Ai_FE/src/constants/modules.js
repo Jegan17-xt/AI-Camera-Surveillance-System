@@ -11,6 +11,7 @@ import {
   ClipboardList,
   FileBarChart2,
   Settings as SettingsIcon,
+  Network,
 } from "lucide-react";
 
 // Mirrors the module_key values seeded in Backend/auth/database.py (MODULES).
@@ -64,11 +65,17 @@ export const PORTAL_BASE_PATHS = ["/admin", "/user"];
 // the exact same module-permission system (module_key matches
 // Backend/auth/database.py's MODULES list) — a Company Admin only sees
 // and can reach one of these if the Super Admin has granted it, via
-// Sidebar.jsx's extraItems + ModuleRoute below. subscription_payment is
-// the only entry left here: it's a Company Admin's own billing page, with
-// no User-grantable equivalent at all (see GRANTABLE_USER_MODULE_KEYS).
+// Sidebar.jsx's extraItems + ModuleRoute below. subscription_payment and
+// site_management are the two entries here: subscription_payment is a
+// Company Admin's own billing page; site_management (Sites / VPN Gateway
+// Management) is Site CRUD + VPN Gateway config, also Company-Admin-only
+// (see Backend/api/company_users.py's GRANTABLE_USER_MODULE_KEYS, which
+// deliberately excludes both). Neither has a User-grantable equivalent —
+// a User's own visibility into Sites is a plain field inside the shared
+// Camera Management form (the "Site / Office" picker), not a page.
 export const COMPANY_ADMIN_ONLY_MODULES = [
   { key: "subscription_payment", label: "Subscription & Payment", slug: "subscription-payment", icon: CreditCard },
+  { key: "site_management", label: "Sites / VPN", slug: "sites", icon: Network },
 ];
 
 // Full pathname (either portal) -> the module key(s) that satisfy it, for

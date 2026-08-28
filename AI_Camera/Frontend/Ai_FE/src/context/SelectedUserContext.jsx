@@ -2,11 +2,12 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { useAuth } from "./AuthContext";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
+import { API_BASE_URL } from "../lib/apiBase";
 
 const SelectedUserContext = createContext(null);
 
 const STORAGE_KEY = "selected_user_id";
-const COMPANY_USERS_URL = "http://localhost:5000/company/users";
+const COMPANY_USERS_URL = `${API_BASE_URL}/company/users`;
 
 // Per-User Data Isolation: the Company Admin's "view as" filter — which
 // User's data-scoped pages (Dashboard, Live Camera, Registered/Unknown

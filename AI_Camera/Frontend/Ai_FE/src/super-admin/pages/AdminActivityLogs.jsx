@@ -8,6 +8,7 @@ import AdminButton from "../ui/AdminButton";
 import AdminModal from "../ui/AdminModal";
 import AdminToast from "../ui/AdminToast";
 import { DATA_EVENTS, emitDataEvent } from "../../lib/dataEvents";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 const actionTone = {
   Login: "text-signal-green",
@@ -44,7 +45,7 @@ export default function AdminActivityLogs() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/activity-logs")
+      .get(`${API_BASE_URL}/activity-logs`)
       .then((res) => setLogs(res.data.logs || []))
       .catch((err) => {
         console.error("Activity Logs API Error :", err);
@@ -74,7 +75,7 @@ export default function AdminActivityLogs() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/activity-logs/${deleteTarget.id}`)
+      .delete(`${API_BASE_URL}/activity-logs/${deleteTarget.id}`)
       .then(() => {
         setToast({ type: "success", message: "Activity log deleted." });
         setDeleteTarget(null);
@@ -91,7 +92,7 @@ export default function AdminActivityLogs() {
     setDeletingAll(true);
 
     axios
-      .delete("http://localhost:5000/activity-logs")
+      .delete(`${API_BASE_URL}/activity-logs`)
       .then(() => {
         setToast({ type: "success", message: "All activity logs deleted." });
         setDeleteAllOpen(false);

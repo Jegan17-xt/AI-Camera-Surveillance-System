@@ -10,6 +10,7 @@ import AdminToast from "../ui/AdminToast";
 import AdminBadge from "../ui/AdminBadge";
 import AdminSelect from "../ui/AdminSelect";
 import { useAuth } from "../../context/AuthContext";
+import { API_BASE_URL } from "../../lib/apiBase";
 import {
   validateTextField,
   validateEmail,
@@ -97,7 +98,7 @@ export default function AdminManagement() {
     setError(null);
 
     return axios
-      .get("http://localhost:5000/users")
+      .get(`${API_BASE_URL}/users`)
       .then((res) => {
         setAdmins((res.data.users || []).filter((u) => u.role === "Super Admin"));
       })
@@ -130,7 +131,7 @@ export default function AdminManagement() {
     setSaving(true);
 
     axios
-      .post("http://localhost:5000/users", { ...addForm, role: "Super Admin", status: "Active" })
+      .post(`${API_BASE_URL}/users`, { ...addForm, role: "Super Admin", status: "Active" })
       .then(() => {
         setToast({ type: "success", message: "Super Admin account created successfully." });
         setAddOpen(false);
@@ -163,7 +164,7 @@ export default function AdminManagement() {
     setSaving(true);
 
     try {
-      await axios.put(`http://localhost:5000/users/${editTarget.id}`, {
+      await axios.put(`${API_BASE_URL}/users/${editTarget.id}`, {
         name: editForm.name,
         email: editForm.email,
         username: editForm.username,
@@ -172,7 +173,7 @@ export default function AdminManagement() {
       });
 
       if (editForm.status !== editTarget.status) {
-        await axios.put(`http://localhost:5000/users/${editTarget.id}/status`, { status: editForm.status });
+        await axios.put(`${API_BASE_URL}/users/${editTarget.id}/status`, { status: editForm.status });
       }
 
       setToast({ type: "success", message: "Super Admin account updated successfully." });
@@ -203,7 +204,7 @@ export default function AdminManagement() {
     setUpdatingPassword(true);
 
     axios
-      .put(`http://localhost:5000/users/${passwordTarget.id}/reset-password`, { password: newPassword })
+      .put(`${API_BASE_URL}/users/${passwordTarget.id}/reset-password`, { password: newPassword })
       .then(() => {
         setToast({ type: "success", message: "Password reset successfully." });
         setPasswordTarget(null);
@@ -221,7 +222,7 @@ export default function AdminManagement() {
     setDeleting(true);
 
     axios
-      .delete(`http://localhost:5000/users/${deleteTarget.id}`)
+      .delete(`${API_BASE_URL}/users/${deleteTarget.id}`)
       .then(() => {
         setToast({ type: "success", message: "Super Admin account deleted successfully." });
         setDeleteTarget(null);

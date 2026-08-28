@@ -6,6 +6,7 @@ import AdminCard from "../ui/AdminCard";
 import AdminButton from "../ui/AdminButton";
 import AdminToast from "../ui/AdminToast";
 import AdminSelect from "../ui/AdminSelect";
+import { API_BASE_URL } from "../../lib/apiBase";
 
 const inputClass =
   "w-full rounded-md admin-panel px-3.5 py-2.5 text-sm text-ink-100 placeholder:text-ink-500 outline-none focus:border-admin-accent/50 focus:ring-2 focus:ring-admin-accent/20";
@@ -31,7 +32,7 @@ export default function AdminBillingPaymentsLog() {
     setCompaniesLoading(true);
 
     axios
-      .get("http://localhost:5000/subscriptions")
+      .get(`${API_BASE_URL}/subscriptions`)
       .then((res) => setCompanies(res.data.subscriptions || []))
       .catch((err) => console.error("Subscriptions API Error :", err))
       .finally(() => setCompaniesLoading(false));
@@ -51,7 +52,7 @@ export default function AdminBillingPaymentsLog() {
     setSaving(true);
 
     axios
-      .post(`http://localhost:5000/users/${form.customer_id}/payments`, {
+      .post(`${API_BASE_URL}/users/${form.customer_id}/payments`, {
         amount: form.amount,
         method: form.method,
         note: form.note,
