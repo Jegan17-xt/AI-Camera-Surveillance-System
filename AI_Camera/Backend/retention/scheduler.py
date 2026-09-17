@@ -26,6 +26,7 @@ from error_logging import log_exception
 from api.retention_settings import get_all_retention_policies, RETENTION_DAYS, DEFAULT_POLICY
 from api.unknown import delete_unknown_persons_older_than
 from api.attendance import delete_attendance_reports_older_than
+from api.detection_events import delete_detection_events_older_than
 from reports.daily_report import delete_report_logs_older_than
 
 # Daily-granularity policies don't need 30-second precision like the
@@ -57,12 +58,13 @@ def _sweep_company(customer_id, policy):
     deleted_unknown = delete_unknown_persons_older_than(customer_id, cutoff_dt)
     deleted_report_pdfs = delete_report_logs_older_than(customer_id, cutoff_dt)
     deleted_attendance_csv = delete_attendance_reports_older_than(customer_id, cutoff_dt)
+    deleted_events = delete_detection_events_older_than(customer_id, cutoff_dt)
 
-    if deleted_unknown or deleted_report_pdfs or deleted_attendance_csv:
+    if deleted_unknown or deleted_report_pdfs or deleted_attendance_csv or deleted_events:
         print(
             f"[RETENTION SCHEDULER] customer={customer_id} policy={policy} cutoff={cutoff_dt} — "
             f"deleted unknown_persons={deleted_unknown} report_pdfs={deleted_report_pdfs} "
-            f"attendance_csv={deleted_attendance_csv}"
+            f"attendance_csv={deleted_attendance_csv} detection_events={deleted_events}"
         )
 
 

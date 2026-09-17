@@ -15,6 +15,7 @@ from api.settings import init_settings_table
 from api.cameras import init_cameras_table
 from api.sites import init_sites_tables
 from api.branding import init_branding_table
+from api.website_content import init_website_content_table
 from api.ai_config import init_ai_config_table
 from api.subscriptions import init_subscriptions_table
 from api.registered import init_registered_persons_table
@@ -22,7 +23,11 @@ from api.attendance import init_attendance_table
 from api.unknown import init_unknown_persons_table
 from api.notification_settings import init_notification_report_tables
 from api.billing import init_billing_tables
+from api.module_packages import init_module_packages_tables
 from api.retention_settings import init_retention_tables
+from api.detection_events import init_detection_events_table
+from api.leads import init_leads_table
+from notifications.fcm import init_fcm_tokens_table
 from camera.detection_service import start_all_enabled_cameras
 from camera import ai_prewarm
 from reports.scheduler import start_report_scheduler
@@ -69,6 +74,11 @@ init_cameras_table()
 # app_settings row.
 init_branding_table()
 
+# Website Settings Setup — public landing page content (Super Admin >
+# System Settings > Website Settings). Reuses the same platform_settings
+# table as Branding above; nothing to migrate, kept for startup symmetry.
+init_website_content_table()
+
 # AI Configuration Setup — per-customer Super Admin-only pipeline
 # toggles (Customers > Customer Details > AI Configuration). Must run
 # after init_db(), since the table's FOREIGN KEY references users.
@@ -103,6 +113,14 @@ init_notification_report_tables()
 # everything above.
 init_billing_tables()
 
+# Module-Based Pricing & Access — seeds the 4 purchasable packages
+# (Cameras / People / Security & Detection / Reports) as "package:*"
+# BillableItem rows + their sub-module composition, then migrates every
+# existing Company Admin onto all 4 packages (frozen price 0, so their
+# agreed amount is untouched) and drops the obsolete per-module catalog.
+# Must run AFTER init_billing_tables() (shares the billable_items table).
+init_module_packages_tables()
+
 # Data Retention — Super Admin's per-Company-Admin auto-delete policy for
 # captured/generated data (Admin & User Overview page). Brand-new table,
 # no migration needed; init_retention_tables() exists only so this
@@ -110,6 +128,24 @@ init_billing_tables()
 # site above. Must run after init_db(), same FOREIGN-KEY-references-
 # users reasoning as everything above.
 init_retention_tables()
+
+# Multi-Object & Fire Detection — the `detection_events` table is created
+# by init_db()'s create_all() above (brand-new table); this only ensures
+# its composite indexes exist on a database that predates them and is the
+# home for any future additive migration. Must run after init_db().
+init_detection_events_table()
+
+# Landing Page Interest & Lead popup — brand-new table, no migration
+# needed; init_leads_table() exists only for startup-call symmetry with
+# every other init_*_table() call site above. Must run after init_db().
+init_leads_table()
+
+# Super Admin "New Lead" push notifications (FCM) — brand-new table, no
+# migration needed; init_fcm_tokens_table() exists only for startup-call
+# symmetry with every other init_*_table() call site above. Must run
+# after init_db(). Firebase itself is initialized lazily, on first actual
+# send (see notifications/fcm.py) — nothing here touches Firebase.
+init_fcm_tokens_table()
 
 # AI Detection Engine — starts every enabled camera's own background
 # worker (camera/detection_service.py) the moment the backend process
@@ -141,6 +177,54 @@ init_retention_tables()
 _should_start_background_services = (
     not _flask_debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true"
 )
+
+# --- Single-instance guard (AI Detection Engine) ---
+# `start_all_enabled_cameras()` + `ai_prewarm.start_prewarm()` below open
+# an RTSP connection per camera and load YOLO + the fire model +
+# InsightFace — all at MODULE IMPORT time, before app.run() ever tries to
+# bind the port. So a second `python -m api.app` started by mistake does
+# ALL of that work (duplicate RTSP workers for the same camera, a second
+# full set of model loads) and only fails much later, on the port bind —
+# by which point it has already been fighting the real instance for CPU
+# for minutes. On a 4-core box that alone is enough to stall InsightFace
+# warmup long enough that the real instance never starts detecting.
+# Confirmed live: two instances -> InsightFace warmup never completes ->
+# stream works but zero detections/events.
+#
+# Fix: before starting ANY background service, probe the API port. If
+# something is already listening there, another instance owns it — this
+# process would be a useless second API server anyway, so exit now,
+# before a single model or RTSP connection is touched. A lone TIME_WAIT
+# socket never accepts a connection, so this only trips on a live
+# listener. No effect on the normal single-instance case, and the
+# Werkzeug reloader child (WERKZEUG_RUN_MAIN=true) probes before its own
+# parent has bound anything, so dev mode is unaffected too.
+_API_PORT = int(os.environ.get("PORT") or os.environ.get("API_PORT") or 5000)
+
+
+def _another_instance_is_listening(port):
+    import socket
+
+    for host in ("127.0.0.1", "::1"):
+        try:
+            family = socket.AF_INET6 if ":" in host else socket.AF_INET
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.5)
+                if probe.connect_ex((host, port)) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+if _should_start_background_services and _another_instance_is_listening(_API_PORT):
+    print(
+        f"[app.py] ANOTHER BACKEND INSTANCE is already running on port {_API_PORT}. "
+        f"This process would only duplicate the camera workers and reload YOLO / "
+        f"the fire model / InsightFace, starving CPU and blocking the running "
+        f"instance's warmup. Exiting now — run exactly ONE backend."
+    )
+    sys.exit(1)
 
 if _should_start_background_services:
     start_all_enabled_cameras()

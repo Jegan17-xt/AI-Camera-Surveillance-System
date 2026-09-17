@@ -53,8 +53,9 @@ export default function AdminCustomers() {
   const [editTarget, setEditTarget] = useState(null);
   const [editForm, setEditForm] = useState({ name: "", email: "", username: "", phone_number: "", status: "Active" });
   const [editTouched, setEditTouched] = useState({});
-  const [permissions, setPermissions] = useState([]);
+  const [packages, setPackages] = useState([]);
   const [permLoading, setPermLoading] = useState(false);
+  const [packageBusy, setPackageBusy] = useState(null);
 
   const addErrors = {
     name: validateTextField(addForm.name, "Name", { minLen: 2, maxLen: 50 }),
@@ -140,37 +141,20 @@ export default function AdminCustomers() {
       status: customer.status,
     });
     setEditTouched({});
-    setPermissions([]);
+    setPackages([]);
     setPermLoading(true);
 
-    // Permissions (module_key/label/granted/always_active) + this
-    // company's effective billing price per module (its own override if
-    // one is set, otherwise the global catalog price — same resolution
-    // AdminBillingPricing.jsx and the Company Admin's own Subscription &
-    // Payment page use), merged into one row per module for the Module
-    // Access & Billing grid below.
-    Promise.all([
-      axios.get(`${API_BASE_URL}/users/${customer.id}/permissions`),
-      axios.get(`${API_BASE_URL}/billing/items`, { params: { customer_id: customer.id } }),
-    ])
-      .then(([permRes, itemsRes]) => {
-        const priceByModuleKey = Object.fromEntries(
-          (itemsRes.data.items || [])
-            .filter((item) => item.activation_type === "module")
-            .map((item) => [item.activation_ref, item])
-        );
-
-        setPermissions(
-          (permRes.data.permissions || []).map((p) => ({
-            ...p,
-            monthly_price: priceByModuleKey[p.module_key]?.monthly_price ?? 0,
-            yearly_price: priceByModuleKey[p.module_key]?.yearly_price ?? 0,
-          }))
-        );
-      })
+    // Which of the 4 packages this company owns + its effective price
+    // per package (its own override if the Super Admin set one, else the
+    // global catalog price). Assigning/revoking a package here takes
+    // effect immediately (POST-less PUT below) — access is otherwise
+    // bought by the Company Admin themselves on their Subscription page.
+    axios
+      .get(`${API_BASE_URL}/module-packages`, { params: { customer_id: customer.id } })
+      .then((res) => setPackages(res.data.packages || []))
       .catch((err) => {
-        console.error("Get Permissions API Error :", err);
-        setToast({ type: "error", message: "Failed to load module access & billing details." });
+        console.error("Get Module Packages API Error :", err);
+        setToast({ type: "error", message: "Failed to load package access details." });
       })
       .finally(() => setPermLoading(false));
   };
@@ -179,15 +163,26 @@ export default function AdminCustomers() {
     setEditTarget(null);
   };
 
-  const toggleModule = (moduleKey, alwaysActive) => {
-    // Dashboard and Subscription & Payment can never be locked — see
-    // Backend/auth/database.py's ALWAYS_ACTIVE_MODULE_KEYS. Enforced
-    // again server-side regardless of this guard.
-    if (alwaysActive) return;
+  const togglePackage = (pkg) => {
+    if (!editTarget) return;
+    setPackageBusy(pkg.package_key);
 
-    setPermissions((prev) =>
-      prev.map((p) => (p.module_key === moduleKey ? { ...p, granted: !p.granted } : p))
-    );
+    axios
+      .put(`${API_BASE_URL}/module-packages/${pkg.package_key}/assign/${editTarget.id}`, {
+        owned: !pkg.owned,
+      })
+      .then((res) => {
+        setPackages(res.data.packages || []);
+        setToast({
+          type: "success",
+          message: `${pkg.name} ${!pkg.owned ? "granted to" : "revoked from"} ${editTarget.name}.`,
+        });
+        emitDataEvent(DATA_EVENTS.CUSTOMERS_CHANGED);
+      })
+      .catch((err) => {
+        setToast({ type: "error", message: err.response?.data?.message || "Failed to update package access." });
+      })
+      .finally(() => setPackageBusy(null));
   };
 
   const handleSave = async () => {
@@ -209,8 +204,8 @@ export default function AdminCustomers() {
         await axios.put(`${API_BASE_URL}/users/${editTarget.id}/status`, { status: editForm.status });
       }
 
-      const moduleKeys = permissions.filter((p) => p.granted).map((p) => p.module_key);
-      await axios.put(`${API_BASE_URL}/users/${editTarget.id}/permissions`, { module_keys: moduleKeys });
+      // Package access is saved immediately as it is toggled (see
+      // togglePackage) — nothing package-related to persist here.
 
       setToast({ type: "success", message: "Company Admin updated successfully." });
       setEditTarget(null);
@@ -514,43 +509,46 @@ export default function AdminCustomers() {
           </div>
 
           <div className="border-t border-white/8 pt-5">
-            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-ink-500">Module Access & Billing</p>
+            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-ink-500">Package Access</p>
             <p className="mb-3 text-xs text-ink-500">
-              Allow (unlock) a module to make it accessible in this Company Admin's dashboard and include its price
-              in their Total Amount. A locked module stays visible to them but inaccessible and unbilled — they
-              cannot change this themselves.
+              Grant (unlock) a package to make its pages appear in this Company Admin's dashboard. Company Admins
+              normally buy packages themselves on their Subscription &amp; Payment page — granting here is a manual
+              override (no charge). Dashboard, Settings and Subscription &amp; Payment are always included.
+              Prices are set on the Module Packages page.
             </p>
             {permLoading ? (
               <div className="flex items-center gap-2 py-3 text-ink-500">
                 <Loader2 size={16} className="animate-spin" />
-                <p className="text-xs">Loading module access…</p>
+                <p className="text-xs">Loading package access…</p>
               </div>
             ) : (
               <div className="divide-y divide-white/5 rounded-md admin-panel px-4 py-1">
-                {permissions.map((p) => (
+                {packages.map((p) => (
                   <AdminToggle
-                    key={p.module_key}
+                    key={p.package_key}
                     label={
                       <span className="flex items-center gap-2">
-                        {p.granted ? (
+                        {p.owned ? (
                           <Unlock size={14} className="text-signal-green" />
                         ) : (
                           <Lock size={14} className="text-ink-500" />
                         )}
-                        {p.module_label}
-                        {p.always_active && <span className="text-[11px] text-ink-500">(Always Unlocked)</span>}
+                        {p.name}
+                        {p.global_enabled === false && (
+                          <span className="text-[11px] text-signal-amber">(Disabled platform-wide)</span>
+                        )}
+                        {p.global_enabled !== false && p.access_enabled === false && (
+                          <span className="text-[11px] text-signal-red">(Locked for this company)</span>
+                        )}
+                        {p.is_override && <span className="text-[11px] text-admin-gold">(Custom price)</span>}
                       </span>
                     }
-                    description={
-                      p.always_active
-                        ? "Free — always included, never billed."
-                        : `${formatAmount(p.monthly_price)} / mo · ${formatAmount(p.yearly_price)} / yr — ${
-                            p.granted ? "included in Total Amount" : "excluded from Total Amount"
-                          }`
-                    }
-                    checked={p.granted}
-                    disabled={p.always_active}
-                    onChange={() => toggleModule(p.module_key, p.always_active)}
+                    description={`${formatAmount(p.monthly_price)} / mo · ${formatAmount(p.yearly_price)} / yr — ${
+                      p.owned ? "unlocked for this company" : "locked"
+                    }`}
+                    checked={p.owned}
+                    disabled={packageBusy === p.package_key}
+                    onChange={() => togglePackage(p)}
                   />
                 ))}
               </div>

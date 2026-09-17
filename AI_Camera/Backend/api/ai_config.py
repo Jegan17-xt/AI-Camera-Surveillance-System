@@ -37,6 +37,15 @@ DEFAULT_AI_CONFIG = {
     "unknown_duplicate_threshold": 0.50,
     "face_quality_enabled": True,
     "tracking_enabled": True,
+    # --- Multi-Object & Fire Detection ---
+    # Master switches for the non-face detection paths. object/animal
+    # detection ride on the existing single YOLO model (see
+    # detection/detector.py); fire detection uses a separate optional
+    # model (detection/fire_detector.py) and stays inactive if no model
+    # file is installed regardless of this flag. All default ON.
+    "object_detection_enabled": True,
+    "animal_detection_enabled": True,
+    "fire_detection_enabled": True,
 }
 
 # Which keys are booleans (stored as 0/1) vs numeric (stored as-is) —
@@ -51,6 +60,9 @@ _BOOLEAN_KEYS = {
     "unknown_alerts_enabled",
     "face_quality_enabled",
     "tracking_enabled",
+    "object_detection_enabled",
+    "animal_detection_enabled",
+    "fire_detection_enabled",
 }
 
 # (min, max) inclusive bounds for every numeric key — enforced by
@@ -86,6 +98,9 @@ COMPANY_ADMIN_AI_KEYS = (
     "unknown_detection_enabled",
     "save_unknown_persons",
     "attendance_enabled",
+    "object_detection_enabled",
+    "animal_detection_enabled",
+    "fire_detection_enabled",
 )
 
 # Everything a Company Admin's new AI Settings page (Settings >
@@ -165,6 +180,9 @@ def init_ai_config_table():
             "unknown_duplicate_threshold": "FLOAT NOT NULL DEFAULT 0.50",
             "face_quality_enabled": "INTEGER NOT NULL DEFAULT 1",
             "tracking_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "object_detection_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "animal_detection_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "fire_detection_enabled": "INTEGER NOT NULL DEFAULT 1",
         }
 
         for column, ddl_type in column_types.items():
@@ -208,25 +226,95 @@ def _fetch_or_create(customer_id):
         return _row_to_config(row)
 
 
-def get_ai_config(customer_id):
+# The three detection flags whose availability is also gated by the
+# Security & Detection package (api.module_packages) — a company that
+# hasn't bought that package, or whose Super Admin has switched the
+# matching sub-module off platform-wide, never runs that detection path
+# regardless of the stored column value. Purely a read-time gate: the
+# stored value is left untouched so it comes back the moment the package
+# is (re)acquired.
+_PACKAGE_GATED_FLAGS = (
+    "object_detection_enabled",
+    "animal_detection_enabled",
+    "fire_detection_enabled",
+)
+
+
+def _apply_package_gate(tenant_id, config):
+    """Return `config` with any package-gated detection flag forced False
+    when the company isn't entitled to it. Never mutates the cached dict.
+
+    `tenant_id` is the COMPANY this entitlement is billed to — never the
+    AI-config row's own customer_id, which (via Settings > "Managing
+    Settings For") can be one individual User's id instead. Package
+    ownership (module_packages.company_package_keys) is only ever
+    recorded under the company's own id, so gating against the row's raw
+    customer_id would incorrectly lock these flags for every User row
+    and for every Company-Admin-on-behalf-of-a-User row."""
+
+    try:
+        from api.module_packages import ai_flag_allowed  # lazy — avoids import cycle
+    except Exception:
+        return config
+
+    gated = None
+    for key in _PACKAGE_GATED_FLAGS:
+        if config.get(key) and not ai_flag_allowed(tenant_id, key):
+            if gated is None:
+                gated = dict(config)
+            gated[key] = False
+
+    return gated if gated is not None else config
+
+
+def get_ai_flag_locks(tenant_id):
+    """{flag_key: True} for each of the 3 package-gated detection flags
+    this tenant (company) is NOT entitled to right now — no Security &
+    Detection package, the package globally disabled, this company's
+    per-company access to it revoked, or the specific sub-module
+    switched off. The Company Admin / User AI Settings pages use this to
+    render 🔒 Locked and refuse the toggle client-side, matching exactly
+    what update_ai_config/get_ai_config would enforce server-side
+    regardless."""
+
+    try:
+        from api.module_packages import ai_flag_allowed  # lazy — avoids import cycle
+    except Exception:
+        return {key: False for key in _PACKAGE_GATED_FLAGS}
+
+    return {key: not ai_flag_allowed(tenant_id, key) for key in _PACKAGE_GATED_FLAGS}
+
+
+def get_ai_config(customer_id, tenant_id=None):
     """Current AI configuration for one customer. This is what the
     Super Admin's AI Configuration section loads, the Company Admin's
     AI Settings page loads, and what the AI pipeline (camera/
     frame_processor.py, face/quality.py, face/recognizer.py,
     attendance/attendance.py, face/unknown_manager.py) must consult
     before running face recognition, saving an unknown person, marking
-    attendance, or raising an unknown-person alert for this customer."""
+    attendance, or raising an unknown-person alert for this customer.
+
+    The object / animal / fire detection flags are additionally gated by
+    the Security & Detection package here (see _apply_package_gate).
+    `tenant_id` is the company that entitlement is checked against —
+    defaults to `customer_id` (correct for every caller except the
+    Settings pages, which may be reading/writing one specific User's own
+    row on behalf of their company; see api/routes.py's resolve_settings_
+    target_id vs get_tenant_id)."""
+
+    if tenant_id is None:
+        tenant_id = customer_id
 
     now = time.time()
     cached = _cache.get(customer_id)
 
     if cached is not None and now - cached["checked_at"] < _CACHE_TTL:
-        return cached["config"]
+        return _apply_package_gate(tenant_id, cached["config"])
 
     config = _fetch_or_create(customer_id)
     _cache[customer_id] = {"config": config, "checked_at": now}
 
-    return config
+    return _apply_package_gate(tenant_id, config)
 
 
 def validate_ai_settings(new_values):
@@ -258,12 +346,20 @@ def validate_ai_settings(new_values):
     return None
 
 
-def update_ai_config(customer_id, new_values):
+def update_ai_config(customer_id, new_values, tenant_id=None):
     """Persists only recognized keys, scoped to this customer_id only —
     changing Customer A's configuration can never affect Customer B's,
     since every statement here is scoped by customer_id. Returns the
     full merged configuration so the caller can re-render from exactly
     what is now in the database.
+
+    `tenant_id` is forwarded to the final get_ai_config() re-read so the
+    package gate (object/animal/fire detection) is checked against the
+    right company — see get_ai_config's docstring. A write to a
+    package-gated flag this tenant isn't entitled to is still persisted
+    here (so it comes back the instant entitlement is restored) but the
+    value handed back to the caller is gated False, same as any other
+    read.
 
     Does NOT itself validate — callers that accept raw external input
     (api/routes.py's PUT handlers) must call validate_ai_settings()
@@ -296,18 +392,19 @@ def update_ai_config(customer_id, new_values):
 
     _cache.pop(customer_id, None)
 
-    return get_ai_config(customer_id)
+    return get_ai_config(customer_id, tenant_id=tenant_id)
 
 
-def reset_ai_config(customer_id):
+def reset_ai_config(customer_id, tenant_id=None):
     """Deletes this customer_id's row entirely, reverting it back to
     DEFAULT_AI_CONFIG — the next get_ai_config() call lazily reprovisions
     a fresh, all-defaults row via _fetch_or_create. Scoped to this
-    customer_id only, same isolation guarantee as update_ai_config above."""
+    customer_id only, same isolation guarantee as update_ai_config above.
+    `tenant_id` is forwarded the same way as in update_ai_config."""
 
     with get_session() as session:
         session.query(CustomerAiSetting).filter(CustomerAiSetting.customer_id == customer_id).delete()
 
     _cache.pop(customer_id, None)
 
-    return get_ai_config(customer_id)
+    return get_ai_config(customer_id, tenant_id=tenant_id)

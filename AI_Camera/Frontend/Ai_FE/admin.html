@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- Same app, same bundle (/src/main.jsx below) as index.html — the
+         ONLY difference from index.html is this one static manifest
+         link. Android Chrome's full "Install app" installability check
+         (distinct from desktop's, and from the lesser "Create shortcut"
+         Android falls back to) requires the manifest to be discoverable
+         in the page's initial served HTML — a manifest <link> added
+         later via JS (src/components/DynamicManifestLink.jsx, which is
+         what index.html itself relies on) was confirmed NOT sufficient
+         for Android's install-eligibility evaluation, even though the
+         exact same manifest content works fine for desktop Chrome.
+         .htaccess routes every real, fresh navigation under /admin/* to
+         THIS file instead of index.html so the manifest is present from
+         byte one. DynamicManifestLink still runs after mount and keeps
+         handling in-app client-side navigation AWAY from /admin/* (e.g.
+         the "User Sign In" link to /user/login) without a full reload —
+         id="zx-dynamic-manifest" matches DynamicManifestLink.jsx's own
+         MANIFEST_LINK_ID exactly, so on mount it finds and takes over
+         THIS element instead of creating a second, duplicate <link>, and
+         correctly removes THIS one (not a stray duplicate) once the
+         route no longer matches /admin/* or /super-admin/*. -->
+    <link id="zx-dynamic-manifest" rel="manifest" href="/manifest-admin.webmanifest" />
+    <meta name="theme-color" content="#05070d" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Zynez Admin" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <title>AI Sentinel — Surveillance Dashboard</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

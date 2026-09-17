@@ -3,7 +3,17 @@ import datetime
 import threading
 import time
 
-from detection.detector import detect, get_pretrack_info
+from detection.detector import (
+    detect,
+    get_pretrack_info,
+    PERSON_CLASS_ID,
+    VEHICLE_CLASS_IDS,
+    ANIMAL_CLASS_IDS,
+    BIRD_CLASS_ID,
+    COCO_CLASS_NAMES,
+)
+from detection import fire_detector
+from events import manager as event_manager
 from face.face_detector import detect_faces
 from face.recognizer import recognize
 from face.quality import assess_face_quality
@@ -28,6 +38,23 @@ PIPELINE_DEBUG = True
 # guessing which of YOLO / face detection / embedding / recognition /
 # consensus / attendance was slow.
 STAGE_TIMING = True
+
+# --- Temporary [AI DEBUG] trace (AI Detection Pipeline Debug) ---
+# Six explicit, uniquely-tagged checkpoints across one process_frame()
+# call — "frame received" / "process_frame called" / "YOLO inference
+# started" / "YOLO detections count = X" / "Face detection count = X" /
+# "frame processing completed" — so it is unambiguous, from the log
+# alone, that the pipeline is actually running every frame (not just
+# streaming) and exactly how many raw YOLO boxes / faces each frame
+# produced. Layered on top of the existing [AI-CYCLE]/[PIPELINE] logs,
+# changes no detection logic. Flip AI_DEBUG off once the pipeline is
+# confirmed healthy on the target hardware.
+AI_DEBUG = True
+
+
+def _aidbg(msg):
+    if AI_DEBUG:
+        print(f"[AI DEBUG] {msg}")
 
 # --- AI Input Resize (display quality is never affected) ---
 # Profiling (see the [TIMING] breakdown this same flag prints) showed
@@ -113,6 +140,24 @@ _face_gate_lock = threading.Lock()
 
 FACE_DETECTION_GRACE_SECONDS = 2.0
 
+# --- Multi-Object & Fire Detection ---
+# Vehicles/animals ride along on the SAME single YOLO model.track() call
+# as person detection (detection/detector.py) — essentially free. Fire/
+# smoke is a SEPARATE optional model, so it runs at most once per this
+# interval per camera to keep its extra CPU cost bounded on this 4-core
+# box (a real fire does not go out in 1.5s, and the on-frame banner is
+# persisted between checks — see FIRE_OVERLAY_PERSIST_SECONDS).
+FIRE_DETECTION_INTERVAL_SECONDS = 1.5
+# How long the "FIRE DETECTED" banner + boxes keep being redrawn after
+# the last positive fire pass — comfortably longer than the check
+# interval so the warning is steady, not flickering, while still
+# clearing within a few seconds once the fire is genuinely gone. Purely
+# visual; never re-records an event.
+FIRE_OVERLAY_PERSIST_SECONDS = 4.0
+
+_fire_last_run = {}  # tracking_key -> last wall-clock time detect_fire() ran
+_fire_gate_lock = threading.Lock()
+
 
 def drop_tracking_state(tracking_key):
     """Releases this camera's cached detection-persistence overlay
@@ -131,6 +176,16 @@ def drop_tracking_state(tracking_key):
     with _face_gate_lock:
         _face_gate_last_seen.pop(tracking_key, None)
 
+    with _fire_gate_lock:
+        _fire_last_run.pop(tracking_key, None)
+
+    # A real camera's tracking_key IS its integer camera_id (see
+    # compute_tracking_key) — that's exactly what the event manager keys
+    # its dedup state on. The customer-scoped string fallback has no
+    # camera_id and no per-camera dedup rows to prune.
+    if isinstance(tracking_key, int):
+        event_manager.drop_recent_state(tracking_key)
+
 
 def compute_tracking_key(customer_id, camera_id):
     """The one shared rule for which tracking_key a given (customer_id,
@@ -146,6 +201,20 @@ def compute_tracking_key(customer_id, camera_id):
 def _log(msg):
     if PIPELINE_DEBUG:
         print(f"[PIPELINE] {msg}")
+
+
+def _camlog(camera_id, msg):
+    """Uniform `[CAMERA <id>] <MESSAGE>` line — same helper/shape as
+    camera/detection_service.py's own _camlog (kept as a separate,
+    tiny, dependency-free copy here rather than importing across that
+    module boundary), used for the per-frame PERSONS/FACES/OBJECTS/
+    FIRE-SMOKE/DETECTION EVENT CREATED counts this function has direct
+    access to. Skipped for the local-webcam debug source (camera_id is
+    None there) and for the standalone script (camera/camera.py, also
+    None) — neither is a real "added camera"."""
+
+    if camera_id is not None:
+        print(f"[CAMERA {camera_id}] {msg}")
 
 
 def _ms(seconds):
@@ -224,6 +293,7 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
     pipeline_start = time.perf_counter()
     timings = {}
     print("[AI-CYCLE] start")
+    _aidbg(f"process_frame called (camera={camera_id} customer={customer_id})")
 
     if capture_time is not None:
         timings["Frame Capture"] = _ms(pipeline_start - capture_time)
@@ -239,6 +309,15 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
     if ai_scale != 1.0:
         _log(f"AI input resized: {frame.shape[1]}x{frame.shape[0]} -> {ai_frame.shape[1]}x{ai_frame.shape[0]} (scale={ai_scale:.3f}); display stays full resolution")
 
+    # Lazily imported (same reasoning as face/unknown_manager.py's lazy
+    # `from api.settings import get_settings`) — the per-customer AI
+    # Configuration. Read ONCE per frame here (a ~3s-TTL cached read, see
+    # api/ai_config.py) and consulted by every gate below: the YOLO class
+    # list (person / vehicles / animals), the fire pass, face
+    # recognition, unknown-save, attendance.
+    from api.ai_config import get_ai_config
+    ai_config = get_ai_config(customer_id)
+
     # ---------------- YOLO ----------------
     # annotated_frame is always built from the untouched full-resolution
     # `frame`, never from ai_frame — results[0].plot() is no longer used
@@ -249,41 +328,113 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
     person_count = 0
     annotated_frame = frame.copy()
     person_boxes_drawn = []
+    # (x1, y1, x2, y2, label_text, color) for vehicles/animals drawn this
+    # cycle — used only for the short-term persistence redraw below, same
+    # as person_boxes_drawn. Never re-fires an event on redraw.
+    object_boxes_drawn = []
+
+    # Multi-Object Detection: person is always requested; vehicles and/or
+    # animals are appended only when this customer has them enabled.
+    # Still exactly ONE model.track() call — box.cls disambiguates.
+    wanted_classes = [PERSON_CLASS_ID]
+    if ai_config.get("object_detection_enabled", True):
+        wanted_classes += list(VEHICLE_CLASS_IDS)
+    if ai_config.get("animal_detection_enabled", True):
+        wanted_classes += list(ANIMAL_CLASS_IDS)
+
     try:
-        results = detect(ai_frame, tracking_key)
-        person_count = len(results[0].boxes)
+        _aidbg(f"YOLO inference started (classes={wanted_classes})")
+        results = detect(ai_frame, tracking_key, classes=wanted_classes)
+        _aidbg(f"YOLO detections count = {len(results[0].boxes)}")
 
         for box in results[0].boxes:
+            cls_id = int(box.cls[0]) if box.cls is not None else PERSON_CLASS_ID
             bx1, by1, bx2, by2 = [v / ai_scale for v in box.xyxy[0].tolist()]
             conf = float(box.conf[0])
             bx1, by1, bx2, by2 = int(bx1), int(by1), int(bx2), int(by2)
             # ByteTrack (Ultralytics built-in, see detection/detector.py) —
-            # box.id is this physical person's persistent track ID across
+            # box.id is this physical object's persistent track ID across
             # frames, or None on the rare box the tracker hasn't confirmed/
             # assigned an ID to yet this cycle. Purely a display label:
             # never fed into recognition/consensus/attendance/unknown-save
             # below, which stay driven only by face embeddings, unchanged.
             track_id = int(box.id[0]) if box.id is not None else None
-            label = f"person id={track_id} {conf:.2f}" if track_id is not None else f"person {conf:.2f}"
-            cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+
+            if cls_id == PERSON_CLASS_ID:
+                person_count += 1
+                label = f"person id={track_id} {conf:.2f}" if track_id is not None else f"person {conf:.2f}"
+                cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+                cv2.putText(
+                    annotated_frame,
+                    label,
+                    (bx1, max(0, by1 - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2
+                )
+                person_boxes_drawn.append((bx1, by1, bx2, by2, conf, track_id))
+                continue
+
+            # --- Vehicle / bird / animal ---
+            # The specific COCO class (obj_name) is kept only as the
+            # internal object_type on the event; everything the operator
+            # sees — the on-frame label, the event category, the
+            # dashboard — uses the generic category. Bird is its own
+            # category; every other non-bird animal collapses to ANIMAL;
+            # every vehicle class collapses to VEHICLE.
+            obj_name = COCO_CLASS_NAMES.get(cls_id, str(cls_id))
+
+            if cls_id == BIRD_CLASS_ID:
+                category, event_type, color = "bird", event_manager.EVENT_BIRD, (0, 200, 255)
+            elif cls_id in VEHICLE_CLASS_IDS:
+                category, event_type, color = "vehicle", event_manager.EVENT_CAR, (255, 128, 0)
+            else:
+                category, event_type, color = "animal", event_manager.EVENT_ANIMAL, (0, 165, 255)
+
+            obj_label = f"{category.upper()} {int(round(conf * 100))}%"
+            cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), color, 2)
             cv2.putText(
                 annotated_frame,
-                label,
+                obj_label,
                 (bx1, max(0, by1 - 10)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
-                (0, 255, 0),
+                color,
                 2
             )
-            person_boxes_drawn.append((bx1, by1, bx2, by2, conf, track_id))
+            object_boxes_drawn.append((bx1, by1, bx2, by2, obj_label, color))
+
+            # Event Manager owns dedup/"no duplicate events" + the row
+            # write + the ONE snapshot per new event — a lingering object
+            # just bumps detection_count, no new row, no new image. Never
+            # raises (see events/manager.py). dedup_bucket is the generic
+            # category so a car then a bus share one VEHICLE event.
+            # snapshot: this frame with the box already drawn on it.
+            event_manager.record_detection(
+                customer_id,
+                event_type,
+                camera_id=camera_id,
+                owner_user_id=owner_user_id,
+                object_type=obj_name,
+                confidence=conf,
+                dedup_bucket=category,
+                snapshot=annotated_frame,
+            )
 
         if person_count:
             _log(f"Person detected: {person_count}")
         else:
             _log("No person detected")
+        if object_boxes_drawn:
+            _log(f"Vehicles/animals/birds detected: {len(object_boxes_drawn)}")
+        _camlog(camera_id, f"PERSONS: {person_count}")
+        _camlog(camera_id, f"OBJECTS: {len(object_boxes_drawn)}")
     except Exception as e:
         log_exception(e, "YOLO detection")
         _log("YOLO detection failed — see [ERROR] above")
+        _camlog(camera_id, "PERSONS: 0")
+        _camlog(camera_id, "OBJECTS: 0")
     timings["YOLO Detection"] = _ms(time.perf_counter() - t0)
     print(f"[AI-CYCLE] YOLO_ms={timings['YOLO Detection']}")
     # Diagnostic only — reads the exact same person_count/track_id values
@@ -370,14 +521,35 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
             )
         _log(f"Person detection persisted from last known ({_ms(now_wall - cached_person['time'])}ms ago)")
 
-    # Lazily imported (same reasoning as face/unknown_manager.py's lazy
-    # `from api.settings import get_settings`) — Super Admin's per
-    # -customer AI Configuration (Face Recognition / Save Unknown
-    # Persons / Attendance Recording / Unknown Person Alerts). Read once
-    # per frame; every downstream face-pipeline decision below is gated
-    # by it.
-    from api.ai_config import get_ai_config
-    ai_config = get_ai_config(customer_id)
+    # ---------------- Short-Term Vehicle/Animal Detection Persistence ----------------
+    # Same purely-visual redraw as person persistence above — bridges a
+    # single missed YOLO cycle so a car/dog box doesn't flicker. Never
+    # re-records an event (record_detection only fires from a fresh
+    # detection in the YOLO block).
+    with _detection_cache_lock:
+        cache = _detection_cache.setdefault(tracking_key, {})
+
+        if object_boxes_drawn:
+            cache["objects"] = {"items": object_boxes_drawn, "time": now_wall}
+        else:
+            cached_objects = cache.get("objects")
+
+    if not object_boxes_drawn and cached_objects and (now_wall - cached_objects["time"]) <= PERSISTENCE_WINDOW_SECONDS:
+        for (bx1, by1, bx2, by2, obj_label, color) in cached_objects["items"]:
+            cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), color, 2)
+            cv2.putText(
+                annotated_frame,
+                obj_label,
+                (bx1, max(0, by1 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
+        _log(f"Vehicle/animal detection persisted from last known ({_ms(now_wall - cached_objects['time'])}ms ago)")
+
+    # ai_config was already fetched once, near the top of this function
+    # (it also gates the YOLO class list above and the fire pass below).
 
     if not ai_config["face_recognition_enabled"]:
         _log("Face Recognition disabled for this customer — pipeline stops here")
@@ -441,6 +613,8 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
             _face_gate_last_seen[tracking_key] = now_wall_face_gate
 
     timings["Face Detection"] = _ms(time.perf_counter() - t0)
+    _aidbg(f"Face detection count = {len(faces)}")
+    _camlog(camera_id, f"FACES: {len(faces)}")
 
     # Decided ONCE for this whole frame — every unrecognized face in it is
     # judged against the same cooldown clock, so several different brand
@@ -597,6 +771,7 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
                     if saved:
                         _log("Attendance saved")
                         _log("Dashboard updated (MySQL committed — Registered/Attendance Today/Live Attendance/Activity Logs reflect this on next read)")
+                        _camlog(camera_id, f"DETECTION EVENT CREATED (type=ATTENDANCE, name={confirmed_name})")
                     else:
                         _log("Attendance skipped (duplicate within cooldown window, or person no longer registered)")
                 else:
@@ -690,6 +865,7 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
 
                 if saved:
                     _log("Dashboard updated (MySQL committed — Unknown count reflects this on next read)")
+                    _camlog(camera_id, "DETECTION EVENT CREATED (type=UNKNOWN_FACE)")
             else:
                 _log("Unknown save skipped (Unknown Person Auto Save disabled)")
 
@@ -749,6 +925,85 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
             )
         _log(f"Face detection persisted from last known ({_ms(frame_time - cached_faces['time'])}ms ago)")
 
+    # ---------------- Fire / Smoke Detection (separate optional model, reduced cadence) ----------------
+    # Runs at most once per FIRE_DETECTION_INTERVAL_SECONDS per camera so
+    # its extra CPU cost can't scale with frame rate. Fully isolated in
+    # its own try/except — a fire-model failure leaves every overlay
+    # already drawn above (person/face/vehicle/animal) untouched, and the
+    # rest of the pipeline (which already ran) unaffected. Inactive with
+    # zero per-frame cost when no fire model is installed
+    # (fire_detector.is_available() short-circuits).
+    if ai_config.get("fire_detection_enabled", True) and fire_detector.is_available():
+        now_fire = time.time()
+        with _fire_gate_lock:
+            fire_due = (now_fire - _fire_last_run.get(tracking_key, 0.0)) >= FIRE_DETECTION_INTERVAL_SECONDS
+            if fire_due:
+                _fire_last_run[tracking_key] = now_fire
+
+        if fire_due:
+            try:
+                t0 = time.perf_counter()
+                fire_hits = fire_detector.detect_fire(ai_frame)
+                timings["Fire Detection"] = _ms(time.perf_counter() - t0)
+
+                _camlog(camera_id, f"FIRE/SMOKE: {len(fire_hits)}")
+
+                if fire_hits:
+                    labels_present = {h["label"] for h in fire_hits}
+                    banner = "FIRE DETECTED" if "fire" in labels_present else "SMOKE DETECTED"
+                    scaled_boxes = [tuple(int(v / ai_scale) for v in h["bbox"]) for h in fire_hits]
+
+                    # Draw the banner + boxes NOW so the saved snapshot
+                    # carries the same "FIRE DETECTED" evidence overlay a
+                    # viewer sees live (the persist-redraw block below
+                    # keeps it on screen between checks).
+                    _fh, _fw = annotated_frame.shape[:2]
+                    cv2.rectangle(annotated_frame, (0, 0), (_fw, 62), (0, 0, 255), -1)
+                    cv2.putText(annotated_frame, banner, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+                    for (bx1, by1, bx2, by2) in scaled_boxes:
+                        cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), (0, 0, 255), 3)
+
+                    with _detection_cache_lock:
+                        cache = _detection_cache.setdefault(tracking_key, {})
+                        cache["fire"] = {"boxes": scaled_boxes, "banner": banner, "time": now_fire}
+
+                    for label in labels_present:
+                        best = max(h["conf"] for h in fire_hits if h["label"] == label)
+                        event_manager.record_detection(
+                            customer_id,
+                            event_manager.EVENT_FIRE if label == "fire" else event_manager.EVENT_SMOKE,
+                            camera_id=camera_id,
+                            owner_user_id=owner_user_id,
+                            object_type=label,
+                            confidence=best,
+                            dedup_bucket=label,
+                            snapshot=annotated_frame.copy(),
+                        )
+                    _log(f"FIRE/SMOKE DETECTED: {sorted(labels_present)} (conf up to {max(h['conf'] for h in fire_hits):.2f})")
+            except Exception as e:
+                log_exception(e, "Fire/smoke detection")
+
+    # Fire overlay — drawn every frame while a recent positive is still
+    # fresh (bridges the gap between reduced-cadence checks so the warning
+    # is steady, not flickering). Purely visual, never records an event.
+    with _detection_cache_lock:
+        cached_fire = _detection_cache.get(tracking_key, {}).get("fire")
+
+    if cached_fire and (time.time() - cached_fire["time"]) <= FIRE_OVERLAY_PERSIST_SECONDS:
+        fh, fw = annotated_frame.shape[:2]
+        cv2.rectangle(annotated_frame, (0, 0), (fw, 62), (0, 0, 255), -1)
+        cv2.putText(
+            annotated_frame,
+            cached_fire["banner"],
+            (20, 45),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.4,
+            (255, 255, 255),
+            3
+        )
+        for (bx1, by1, bx2, by2) in cached_fire["boxes"]:
+            cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), (0, 0, 255), 3)
+
     # ---------------- Date & Time ----------------
     current_datetime = datetime.datetime.now().strftime(
         "%d-%m-%Y %H:%M:%S"
@@ -771,5 +1026,10 @@ def process_frame(frame, customer_id, camera_id=None, capture_time=None, source_
         print("[TIMING] " + " | ".join(f"{k}={v}ms" for k, v in timings.items()))
 
     print("[AI-CYCLE] end")
+    _aidbg(
+        f"frame processing completed (camera={camera_id} "
+        f"persons={person_count} faces={len(faces)} "
+        f"objects={len(object_boxes_drawn)} total_ms={timings['Total Pipeline Time']})"
+    )
 
     return annotated_frame

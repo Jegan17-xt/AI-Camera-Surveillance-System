@@ -12,6 +12,7 @@ import {
   KeySquare,
   X,
   PieChart,
+  UserPlus,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useAdminBranding } from "../context/AdminBrandingContext";
@@ -26,6 +27,7 @@ const navItems = [
   // changes at all.
   { to: "/super-admin/admin-overview", label: "Admin & User Overview", icon: PieChart },
   { to: "/super-admin/password", label: "Passwords", icon: KeyRound },
+  { to: "/super-admin/leads", label: "Leads", icon: UserPlus },
   { to: "/super-admin/audit-logs", label: "Activity Logs", icon: ScrollText },
 ];
 
@@ -43,7 +45,7 @@ const navGroups = [
     icon: CreditCard,
     children: [
       { to: "/super-admin/billing/overview", label: "Overview" },
-      { to: "/super-admin/billing/pricing", label: "Pricing Settings" },
+      { to: "/super-admin/billing/pricing", label: "Pricing" },
       { to: "/super-admin/billing/subscriptions", label: "Subscriptions" },
       { to: "/super-admin/billing/payments", label: "Payments" },
       { to: "/super-admin/billing/payment-history", label: "Payment History" },
@@ -58,6 +60,7 @@ const navGroups = [
     icon: Settings,
     children: [
       { to: "/super-admin/system-settings", label: "General Settings" },
+      { to: "/super-admin/website-settings", label: "Website Settings" },
       { to: "/super-admin/admin-management", label: "Super Admin Management" },
     ],
   },

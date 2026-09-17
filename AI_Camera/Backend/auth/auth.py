@@ -18,19 +18,44 @@ ALL_MODULE_KEYS = [key for key, _ in MODULES]
 
 
 def get_effective_modules(user):
-    """Modules this user can actually access. Super Admin always gets
-    every module — that's not a grant, it's what being Super Admin means.
-    A Company Admin gets exactly the modules the Super Admin has granted
-    THEM (see auth.database.MODULES / api.permissions), the same
-    DB-backed mechanism a User's own grant from their Company Admin
-    already uses (see api.company_users) — previously this unconditionally
-    returned every module for a Company Admin regardless of what was
-    actually stored, which is the bug this fixes."""
+    """Modules this user can actually access.
+
+    - Super Admin always gets every module — that's what being Super
+      Admin means.
+    - A Company Admin gets whatever their company's purchased packages
+      unlock (api.module_packages.company_module_keys) plus the always-
+      included set (Dashboard / Settings / Subscription & Payment). The
+      old per-module Super-Admin grant no longer drives this — access is
+      now bought, package by package — except the legacy
+      "registered_persons_view" read-only tier, still honored for any
+      account that already holds it.
+    - A User gets what their own Company Admin granted them
+      (api.company_users), clamped to what the company actually owns, so
+      losing a package removes it from every User under that company too.
+    """
 
     if user["role"] == ROLE_SUPER_ADMIN:
         return list(ALL_MODULE_KEYS)
 
-    return get_user_module_keys(user["id"])
+    # Lazy import: api.module_packages -> auth.models only, but keeping
+    # this out of module scope avoids any import-order fragility during
+    # app startup.
+    from api.module_packages import company_module_keys, ALWAYS_INCLUDED_MODULE_KEYS
+
+    company_id = get_tenant_id(user)
+    owned = set(company_module_keys(company_id)) | set(ALWAYS_INCLUDED_MODULE_KEYS)
+    stored = set(get_user_module_keys(user["id"]))
+
+    # Legacy read-only "Registered Persons — View Only" tier: still honored
+    # for any account that already holds it, but only while the company
+    # owns the Registered Persons page (People package).
+    legacy = stored & {"registered_persons_view"} if "registered_persons" in owned else set()
+
+    if user["role"] == ROLE_COMPANY_ADMIN:
+        return sorted(owned | legacy)
+
+    # ROLE_USER — dashboard is always reachable so they have a landing page.
+    return sorted((stored & owned) | legacy | {"dashboard"})
 
 
 def has_module_permission(user, module_key):

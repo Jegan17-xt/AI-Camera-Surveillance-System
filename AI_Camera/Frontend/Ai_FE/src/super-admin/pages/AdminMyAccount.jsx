@@ -98,10 +98,11 @@ export default function AdminMyAccount() {
           email: res.data.user.email,
           username: res.data.user.username,
         });
-        // Reuses the same AuthContext mechanism the User Portal's own
-        // avatar upload already relies on (see src/pages/Settings.jsx)
-        // — this is what makes AdminNavbar's name/role re-render
-        // immediately, without a refetch or page reload.
+        // Reuses the same AuthContext mechanism the User/Admin portals'
+        // own avatar upload already relies on (see
+        // src/user/pages/CompanySettings.jsx) — this is what makes
+        // AdminNavbar's name/role re-render immediately, without a
+        // refetch or page reload.
         updateUser(res.data.user);
         emitDataEvent(DATA_EVENTS.PROFILE_CHANGED);
         setToast({ type: "success", message: "Profile updated successfully." });

@@ -24,6 +24,10 @@ export const DATA_EVENTS = {
   BRANDING_CHANGED: "branding:changed",
   REGISTERED_PERSONS_CHANGED: "registered-persons:changed",
   UNKNOWN_PERSONS_CHANGED: "unknown-persons:changed",
+  // Multi-Object & Fire Detection — fired by pages/DetectionEvents.jsx
+  // after a delete/bulk-delete/clear so the Dashboard cards + feed
+  // refresh without waiting for their next poll.
+  DETECTION_EVENTS_CHANGED: "detection-events:changed",
   ATTENDANCE_CHANGED: "attendance:changed",
   REPORTS_CHANGED: "reports:changed",
   SETTINGS_CHANGED: "settings:changed",

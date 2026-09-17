@@ -323,3 +323,466 @@ body {
 [data-admin-theme="light"] .custom-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(168, 85, 247, 0.35);
 }
+
+/* ==============================
+   Zynez public landing page (src/pages/Landing.jsx)
+
+   Every rule is scoped under `.zynez-landing` so nothing here can reach
+   the User / Company Admin / Super Admin portals — they never render
+   inside that wrapper. Uses the same @theme tokens as the rest of the
+   app (base-*, accent-*, ink-*). All motion is disabled under
+   prefers-reduced-motion at the bottom of this block.
+   ============================== */
+.zynez-landing {
+  background-color: var(--color-base-950);
+  color: var(--color-ink-100);
+  overflow-x: hidden;
+}
+
+/* in-page anchor targets clear the fixed header */
+.zynez-landing :where([id]) {
+  scroll-margin-top: 84px;
+}
+
+/* Deep-space ground: two soft AI glows + a faint moving scan grid. */
+.zynez-landing .zx-ambient {
+  background-image:
+    radial-gradient(60rem 60rem at 8% -10%, rgba(34, 211, 238, 0.10), transparent 60%),
+    radial-gradient(50rem 50rem at 100% 8%, rgba(59, 130, 246, 0.10), transparent 55%),
+    radial-gradient(45rem 45rem at 50% 120%, rgba(30, 58, 138, 0.14), transparent 60%),
+    linear-gradient(180deg, #05070d 0%, #070a15 60%, #05070d 100%);
+}
+
+.zynez-landing .zx-grid {
+  background-image:
+    linear-gradient(rgba(148, 176, 214, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 176, 214, 0.06) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 78%);
+  -webkit-mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 78%);
+  animation: zx-grid-drift 32s linear infinite;
+}
+@keyframes zx-grid-drift {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 46px 46px, 46px 46px; }
+}
+
+/* Thin border + subtle inner light — the premium panel material. */
+.zynez-landing .zx-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: border-color 0.35s ease, transform 0.35s ease, box-shadow 0.35s ease;
+}
+.zynez-landing .zx-card:hover {
+  border-color: rgba(34, 211, 238, 0.35);
+  transform: translateY(-4px);
+  box-shadow: 0 20px 50px -20px rgba(34, 211, 238, 0.25);
+}
+
+.zynez-landing .zx-glass-nav {
+  background: rgba(7, 10, 20, 0.55);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+.zynez-landing .zx-glass-nav[data-scrolled="true"] {
+  background: rgba(5, 7, 13, 0.82);
+  border-bottom-color: rgba(34, 211, 238, 0.16);
+}
+
+/* Camera-HUD viewfinder brackets for the hero visual. */
+.zynez-landing .zx-viewfinder::before,
+.zynez-landing .zx-viewfinder::after {
+  content: "";
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border: 2px solid rgba(34, 211, 238, 0.6);
+}
+.zynez-landing .zx-viewfinder::before { top: 12px; left: 12px; border-right: 0; border-bottom: 0; }
+.zynez-landing .zx-viewfinder::after { bottom: 12px; right: 12px; border-left: 0; border-top: 0; }
+
+/* Sweeping AI scan line across the hero camera frame. */
+.zynez-landing .zx-scanbar {
+  position: absolute;
+  left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.9), transparent);
+  box-shadow: 0 0 18px 2px rgba(34, 211, 238, 0.45);
+  animation: zx-scan 3.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+@keyframes zx-scan {
+  0% { top: 4%; opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { top: 96%; opacity: 0; }
+}
+
+/* Detection box that draws itself in. */
+.zynez-landing .zx-detbox {
+  position: absolute;
+  border: 1.5px solid var(--_c, rgba(34, 211, 238, 0.9));
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3), 0 0 22px -4px var(--_c, rgba(34, 211, 238, 0.6));
+  animation: zx-box-in 0.5s ease-out both;
+}
+@keyframes zx-box-in {
+  from { opacity: 0; transform: scale(1.08); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.zynez-landing .zx-tag {
+  position: absolute;
+  top: -20px; left: -1px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  color: #05070d;
+  background: var(--_c, #22d3ee);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Continuous logo strip — a doubled item list translated by exactly one
+   copy's width (-50% of the doubled track) so the loop is seamless: the
+   instant the animation resets to 0%, the doubled content lines up
+   pixel-for-pixel with what was already on screen. translateX(0)→(-50%)
+   moves the whole track leftward, i.e. items travel right-to-left. */
+.zynez-landing .zx-marquee {
+  display: flex;
+  width: max-content;
+  animation: zx-marquee 34s linear infinite;
+}
+@keyframes zx-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* Cyan → blue gradient text + dot, matching the primary CTA's gradient,
+   with a soft glow sized for this small ticker type (kept separate from
+   the site's larger `.zx-glow-text` heading halo). */
+.zynez-landing .zx-marquee-text {
+  background: linear-gradient(90deg, #22d3ee, #3b82f6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.35), 0 0 16px rgba(59, 130, 246, 0.2);
+}
+.zynez-landing .zx-marquee-dot {
+  background: linear-gradient(90deg, #22d3ee, #3b82f6);
+  box-shadow: 0 0 6px rgba(34, 211, 238, 0.75), 0 0 10px rgba(59, 130, 246, 0.4);
+}
+
+/* Scroll-reveal — a pure progressive enhancement. Content is visible by
+   default; the hidden start state applies ONLY while the container has
+   `data-anim="on"` (added by Landing.jsx's useReveal ONLY when
+   IntersectionObserver is available) AND the element hasn't been shown
+   yet. A failsafe timer in the hook force-shows everything after a few
+   seconds, so a section can never be permanently invisible even if the
+   observer misses it (anchor jumps, restored scroll position, etc). */
+.zynez-landing .zx-reveal {
+  transition: opacity 0.7s ease, transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.zynez-landing[data-anim="on"] .zx-reveal:not([data-shown="true"]) {
+  opacity: 0;
+  transform: translateY(26px);
+}
+
+.zynez-landing .zx-glow-text {
+  text-shadow: 0 0 40px rgba(34, 211, 238, 0.25);
+}
+
+/* The Zynez logo asset carries its own near-black ground. `screen` drops
+   that ground against the dark landing page so the mark reads as
+   transparent — without editing the file or drawing a panel behind it.
+   The source image is never modified. */
+.zynez-landing .zx-logo {
+  mix-blend-mode: screen;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .zynez-landing .zx-logo {
+    transition: filter 0.3s ease;
+  }
+}
+
+.zynez-landing .zx-cta {
+  transition: transform 0.2s ease, box-shadow 0.3s ease, background 0.3s ease;
+}
+.zynez-landing .zx-cta:hover { transform: translateY(-2px); }
+.zynez-landing .zx-cta-primary:hover {
+  box-shadow: 0 12px 34px -8px rgba(34, 211, 238, 0.55);
+}
+
+.zynez-landing .zx-dot-pulse {
+  animation: zx-dot 2s ease-in-out infinite;
+}
+@keyframes zx-dot {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zynez-landing .zx-grid,
+  .zynez-landing .zx-scanbar,
+  .zynez-landing .zx-detbox,
+  .zynez-landing .zx-marquee,
+  .zynez-landing .zx-dot-pulse {
+    animation: none !important;
+  }
+  .zynez-landing .zx-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .zynez-landing .zx-scanbar { display: none; }
+}
+
+/* ==========================================================
+   AI Detection — single-screen "AI Command Center"
+   Left: an infinite-scrolling live event stream. Right: awareness
+   statement, feature chips, and an animated CAMERA→AI→DETECTION→ACTION
+   pipeline. All motion is CSS-only and pauses under reduced-motion.
+   ========================================================== */
+
+/* Premium dark-navy security-tech backdrop for the section straight
+   after the hero. Starts at the hero's near-black so the transition is
+   seamless, then eases into navy with soft blue / cyan glows (no purple,
+   nothing bright). `.zx-detsec-seam` is a top-edge wash that blends the
+   hero into this section. */
+.zynez-landing .zx-detsec {
+  background:
+    radial-gradient(90% 42% at 50% -6%, rgba(37, 99, 235, 0.16), transparent 70%),
+    radial-gradient(52% 44% at 10% 24%, rgba(59, 130, 246, 0.10), transparent 66%),
+    radial-gradient(48% 46% at 92% 86%, rgba(34, 211, 238, 0.07), transparent 66%),
+    linear-gradient(180deg, #06090f 0%, #0a1020 38%, #0b1426 68%, #0a111e 100%);
+}
+.zynez-landing .zx-detsec-seam {
+  background: linear-gradient(180deg, #05070d 0%, rgba(5, 7, 13, 0.55) 40%, transparent 100%);
+}
+
+.zynez-landing .zx-mesh {
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(34, 211, 238, 0.08), transparent 24%),
+    radial-gradient(circle at 78% 68%, rgba(59, 130, 246, 0.08), transparent 26%),
+    radial-gradient(1px 1px at 15% 22%, rgba(148, 200, 255, 0.5) 50%, transparent),
+    radial-gradient(1px 1px at 62% 14%, rgba(148, 200, 255, 0.45) 50%, transparent),
+    radial-gradient(1px 1px at 84% 42%, rgba(148, 200, 255, 0.4) 50%, transparent),
+    radial-gradient(1px 1px at 34% 76%, rgba(148, 200, 255, 0.4) 50%, transparent),
+    radial-gradient(1px 1px at 72% 88%, rgba(148, 200, 255, 0.35) 50%, transparent);
+}
+
+/* grid + corner brackets — shared with the Fire / Smoke section */
+.zynez-landing .zx-cv-grid {
+  background-image:
+    linear-gradient(rgba(120, 170, 220, 0.10) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120, 170, 220, 0.10) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(circle at 50% 45%, #000, transparent 82%);
+  -webkit-mask-image: radial-gradient(circle at 50% 45%, #000, transparent 82%);
+}
+@keyframes zx-lock {
+  0% { opacity: 0; transform: scale(1.12); filter: blur(2px); }
+  60% { opacity: 1; }
+  100% { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+.zynez-landing .zx-corner {
+  position: absolute;
+  width: 14px; height: 14px;
+  border: 2px solid var(--_c);
+}
+.zynez-landing .zx-corner-tl { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+.zynez-landing .zx-corner-tr { top: -2px; right: -2px; border-left: 0; border-bottom: 0; }
+.zynez-landing .zx-corner-bl { bottom: -2px; left: -2px; border-right: 0; border-top: 0; }
+.zynez-landing .zx-corner-br { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+
+/* --- live event stream (left) --- */
+.zynez-landing .zx-stream-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #22d3ee; box-shadow: 0 0 8px #22d3ee;
+  animation: zx-cc-pulse 1.6s ease-in-out infinite;
+}
+@keyframes zx-cc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.zynez-landing .zx-stream-mask {
+  position: relative;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 11%, #000 86%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 11%, #000 86%, transparent);
+}
+.zynez-landing .zx-stream-track {
+  display: flex;
+  flex-direction: column;
+  animation: zx-cc-scroll 28s linear infinite;
+}
+@keyframes zx-cc-scroll { to { transform: translateY(-50%); } }
+.zynez-landing .zx-stream:hover .zx-stream-track { animation-play-state: paused; }
+
+.zynez-landing .zx-stream-scan {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 78px;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.16), transparent);
+  animation: zx-cc-scan 5s ease-in-out infinite;
+}
+@keyframes zx-cc-scan {
+  0%, 100% { transform: translateY(0); opacity: 0.35; }
+  50% { transform: translateY(290px); opacity: 0.85; }
+}
+
+.zynez-landing .zx-erow-ic {
+  display: grid;
+  place-items: center;
+  width: 24px; height: 24px;
+  border-radius: 7px;
+  color: var(--_c);
+  background: color-mix(in srgb, var(--_c) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--_c) 36%, transparent);
+}
+.zynez-landing .zx-epill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--_c) 80%, white 20%);
+  background: color-mix(in srgb, var(--_c) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--_c) 32%, transparent);
+}
+
+/* --- feature chips (right) --- */
+.zynez-landing .zx-fchip {
+  transition: border-color 0.25s ease, background 0.25s ease, transform 0.2s ease;
+}
+.zynez-landing .zx-fchip:hover {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: rgba(34, 211, 238, 0.06);
+  transform: translateY(-1px);
+}
+
+/* --- CAMERA → AI ANALYSIS → DETECTION → ACTION flow --- */
+.zynez-landing .zx-flow-node {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #b4bfd6;
+  white-space: nowrap;
+  animation: zx-cc-node 4s ease-in-out infinite;
+  animation-delay: calc(var(--_i, 0) * 1s);
+}
+@keyframes zx-cc-node {
+  0%, 62%, 100% { border-color: rgba(255, 255, 255, 0.1); color: #b4bfd6; box-shadow: none; }
+  12%, 38% { border-color: rgba(34, 211, 238, 0.6); color: #eaf6ff; box-shadow: 0 0 20px -7px #22d3ee; }
+}
+.zynez-landing .zx-flow-link {
+  position: relative;
+  height: 2px;
+  flex: 1 1 auto;
+  min-width: 14px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.zynez-landing .zx-flow-link span {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 44%;
+  background: linear-gradient(90deg, transparent, #22d3ee, transparent);
+  animation: zx-cc-flow 4s linear infinite;
+  animation-delay: calc(var(--_i, 0) * 1s);
+}
+@keyframes zx-cc-flow {
+  0% { transform: translateX(-110%); }
+  55%, 100% { transform: translateX(320%); }
+}
+
+/* ==========================================================
+   Section stills — supplied images used as-is (native ratio,
+   no crop / stretch / overlay); this only adds the rounded
+   security-monitoring card frame + subtle dark border & glow.
+   ========================================================== */
+.zynez-landing .zx-fire-img,
+.zynez-landing .zx-unk-img {
+  border-radius: 1rem;
+  border: 1px solid rgba(251, 77, 94, 0.28);
+  box-shadow: 0 0 0 1px rgba(251, 77, 94, 0.14),
+    0 40px 80px -34px rgba(251, 77, 94, 0.3),
+    0 18px 50px -20px rgba(0, 0, 0, 0.7);
+}
+
+/* ==========================================================
+   Hero — right-side visual (supplied camera-feed still)
+   The image is used as-is at its native ratio (width:100%, height:auto
+   from the JSX img); this only adds the premium frame + glow so it sits
+   in the Zynez landing aesthetic. No crop, no stretch, no overlay.
+   ========================================================== */
+.zynez-landing .zx-hero-img {
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.14),
+    0 40px 80px -34px rgba(34, 211, 238, 0.3),
+    0 18px 50px -20px rgba(0, 0, 0, 0.7);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zynez-landing .zx-stream-dot,
+  .zynez-landing .zx-stream-track,
+  .zynez-landing .zx-stream-scan,
+  .zynez-landing .zx-flow-node,
+  .zynez-landing .zx-flow-link span {
+    animation: none !important;
+  }
+  .zynez-landing .zx-stream-scan { display: none; }
+}
+
+/* ==========================================================
+   Interest & Lead panel — a floating card, not a full-screen
+   modal: same glass material as .zx-card but without its hover
+   lift (this panel is fixed in place, never a grid tile).
+   ========================================================== */
+.zynez-landing .zx-lead-card {
+  background: linear-gradient(180deg, rgba(11, 15, 26, 0.94), rgba(7, 10, 18, 0.98));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* Mobile: slides up as a bottom sheet. sm+: slides in as a right-side
+   panel. Both keyframes just animate opacity + transform on mount —
+   same one-shot "animate-*-in" pattern as .animate-modal-in above. */
+.zynez-landing .zx-lead-panel {
+  animation: zx-lead-sheet-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (min-width: 640px) {
+  .zynez-landing .zx-lead-panel {
+    animation: zx-lead-panel-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+@keyframes zx-lead-sheet-in {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes zx-lead-panel-in {
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .zynez-landing .zx-lead-panel {
+    animation: none;
+  }
+}

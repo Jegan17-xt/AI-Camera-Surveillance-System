@@ -30,7 +30,7 @@ export default function NotFoundRedirect() {
   const target = isSuperAdmin(user)
     ? "/super-admin/dashboard"
     : isCompanyAdmin(user)
-      ? "/admin/dashboard"
+      ? "/admin/user-management"
       : "/user/dashboard";
   routeLog(`NotFoundRedirect: REDIRECT -> ${target} (role="${user.role}")`);
   return <Navigate to={target} replace />;

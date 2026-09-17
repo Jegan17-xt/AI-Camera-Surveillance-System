@@ -25,6 +25,15 @@ from api.unknown import (
     unknown_folder,
     unknown_image_owner_ok,
 )
+from api.detection_events import (
+    get_detection_events,
+    get_detection_event_stats,
+    delete_detection_event,
+    delete_multiple_detection_events,
+    delete_all_detection_events,
+    detection_events_folder,
+    event_image_owner_ok,
+)
 from api.attendance import (
     get_attendance_records,
     get_daily_report,
@@ -47,6 +56,9 @@ from api.normal_cameras import (
 )
 from api.avatar import save_avatar, remove_avatar, get_avatar_owner, AVATAR_FOLDER
 from api.branding import get_branding, update_app_name, update_logo, remove_logo, LOGO_FOLDER
+from api.website_content import get_website_content, update_section, update_image, WEBSITE_FOLDER
+from api.leads import list_leads, create_lead, delete_lead
+from notifications.fcm import register_token as register_fcm_token, unregister_token as unregister_fcm_token, send_new_lead_notification, is_fcm_configured
 from api.cameras import (
     get_cameras_for_customer,
     get_camera,
@@ -82,6 +94,7 @@ from api.ai_config import (
     update_ai_config,
     reset_ai_config,
     validate_ai_settings,
+    get_ai_flag_locks,
     COMPANY_ADMIN_AI_KEYS,
     COMPANY_ADMIN_AI_SETTINGS_KEYS,
 )
@@ -166,6 +179,16 @@ from api.billing import (
     get_checkout_context,
     checkout,
 )
+from api.module_packages import (
+    get_package_catalog,
+    update_package,
+    set_submodule_enabled,
+    set_package_price_override,
+    clear_package_price_override,
+    assign_package,
+    get_company_packages,
+    checkout_packages,
+)
 from api.admin_overview import (
     list_admin_overview,
     get_admin_overview_detail,
@@ -179,11 +202,12 @@ from face.database import reload_database
 from api.notification_settings import (
     get_notification_settings,
     update_unknown_alert_settings,
+    update_detection_alert_settings,
     update_daily_report_settings,
     reset_notification_settings,
 )
 from notifications.service import get_notification_logs, delete_notification_log
-from notifications.image_links import verify_public_image_link, verify_public_document_link
+from notifications.image_links import verify_public_image_link, verify_public_document_link, verify_public_event_image_link
 from reports.daily_report import (
     generate_and_send_daily_report,
     get_report_logs,
@@ -757,6 +781,112 @@ def public_daily_report_document(customer_id, expires, sig, filename):
     return send_from_directory(daily_report_folder(customer_id), filename)
 
 
+# Serve AI Detection Alert snapshots (fire/smoke/vehicle/animal/bird) —
+# Public, Signed (WhatsApp ImageUrl). Same "anonymous fetch, gated by
+# HMAC signature + expiry, not by who's asking" shape as
+# public_unknown_image above — see notifications/image_links.py's
+# build_public_event_image_url. <path:relpath> (not <filename>) because
+# DetectionEvent.image_path is a "<DD-MM-YYYY>/<file>.jpg" subfolder
+# path, same converter /detection-events/image/<customer_id>/<relpath>
+# already uses for the session-gated version of this same file.
+@api.route("/public/event-image/<int:customer_id>/<int:expires>/<sig>/<path:relpath>", methods=["GET"])
+def public_event_image(customer_id, expires, sig, relpath):
+
+    if not verify_public_event_image_link(customer_id, relpath, expires, sig):
+        return jsonify({"success": False, "message": "Invalid or expired link."}), 403
+
+    return send_from_directory(detection_events_folder(customer_id), relpath)
+
+
+# Public pricing — the Zynez marketing / landing page's Pricing + Add-ons
+# sections. Read-only, no session required, no per-company scope: it
+# returns the SAME global catalog the Super Admin configures
+# (get_package_catalog() / list_billable_items() with no customer_id, so
+# no BillableItemPriceOverride / BillableItemAccess is ever consulted).
+# Nothing here is writable and it changes no existing behaviour — it is
+# purely an anonymous read of the already-existing pricing model, so the
+# landing page never has to hardcode a price.
+@api.route("/public/pricing", methods=["GET"])
+def public_pricing():
+
+    packages = get_package_catalog()["packages"]
+
+    addons = [
+        item
+        for item in list_billable_items()
+        if item.get("enabled") and item.get("activation_type") != "module"
+    ]
+
+    return jsonify({
+        "packages": packages,
+        "addons": addons,
+        "billing_config": get_billing_config(),
+    })
+
+
+# Public website content — every piece of landing-page copy/imagery the
+# Super Admin edits from Website Settings (see api/website_content.py).
+# Same "anonymous, read-only, global, no session" reasoning as
+# public_pricing directly above: the landing page has no login, so this
+# must be reachable with no decorator at all.
+@api.route("/public/website-content", methods=["GET"])
+def public_website_content():
+
+    return jsonify(get_website_content())
+
+
+# Serve Website Content images (hero/section/logo) — public and
+# undecorated like the route above, since anonymous landing-page
+# visitors must be able to load them. Writable only via the
+# @super_admin_required routes further below.
+@api.route("/public/website-content/image/<filename>", methods=["GET"])
+def public_website_content_image(filename):
+
+    return send_from_directory(WEBSITE_FOLDER, filename)
+
+
+# Public lead submission — the landing page's Interest & Lead popup AND
+# its Contact section form (Frontend/Ai_FE/src/pages/Landing.jsx), both
+# posting here with a different `source`. Anonymous, no session, same
+# reasoning as public_pricing/public_website_content above: the landing
+# page has no login. Rate-limited per IP (not per user — there is no
+# user yet) so the endpoint can't be used to flood the leads table.
+@api.route("/public/leads", methods=["POST"])
+@rate_limited("public_leads", max_attempts=10, window_seconds=600, per="ip")
+def public_leads_create():
+
+    data = request.get_json(silent=True) or {}
+
+    lead, error, is_new = create_lead(
+        data.get("name"),
+        data.get("phone"),
+        data.get("address"),
+        data.get("email"),
+        source=data.get("source") or "Landing Page",
+        # Real GPS coordinates (browser Geolocation API), entirely
+        # optional — see Frontend/Ai_FE/src/lib/geolocation.js and
+        # create_lead's own docstring. Absent/invalid values never block
+        # this submission; they're just stored as NULL.
+        latitude=data.get("latitude"),
+        longitude=data.get("longitude"),
+    )
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    # Super Admin push notification (notifications/fcm.py) — only for a
+    # genuinely NEW lead (is_new, from create_lead itself — never
+    # inferred from timestamps, which can coincidentally match on a
+    # same-second duplicate update too), never a duplicate-phone update.
+    # Exception-isolated inside send_new_lead_notification itself: a
+    # push failure can never turn this into a 500 or affect the lead
+    # that's already saved.
+    if is_new:
+        send_new_lead_notification(lead)
+
+    return jsonify({"success": True, "lead": lead})
+
+
 # Delete Unknown Person API
 @api.route("/unknown/<unknown_id>", methods=["DELETE"])
 @module_required("unknown_persons")
@@ -800,6 +930,113 @@ def delete_unknown_all():
 
     current_user = get_current_user()
     deleted_count = delete_all_unknown_persons(
+        get_tenant_id(current_user), owner_user_id=_mutation_owner_restriction(current_user)
+    )
+
+    return jsonify({"success": True, "deleted": deleted_count})
+
+
+# ==============================
+# Detection Events API (Multi-Object & Fire Detection)
+# ==============================
+# The unified feed of every non-attendance detection: vehicles, animals,
+# fire, smoke (own table), plus PERSON_DETECTED / UNKNOWN_FACE merged in
+# from the attendance / unknown_persons tables at read time. Same
+# per-user isolation + optional paging idiom as /unknown-persons above.
+@api.route("/detection-events", methods=["GET"])
+@module_required("detection_events")
+def detection_events():
+
+    current_user = get_current_user()
+    scope = get_data_scope(current_user, request.args.get("user_id"))
+    limit, offset = _parse_pagination_args()
+
+    camera_id = request.args.get("camera_id")
+    try:
+        camera_id = int(camera_id) if camera_id not in (None, "") else None
+    except (TypeError, ValueError):
+        camera_id = None
+
+    events, total = get_detection_events(
+        scope["customer_id"],
+        owner_user_id=scope["owner_user_id"],
+        event_types=request.args.get("type"),
+        camera_id=camera_id,
+        limit=limit,
+        offset=offset,
+    )
+
+    return jsonify({"total": total, "events": events})
+
+
+@api.route("/detection-events/stats", methods=["GET"])
+@module_required("detection_events")
+def detection_events_stats():
+
+    current_user = get_current_user()
+    scope = get_data_scope(current_user, request.args.get("user_id"))
+
+    return jsonify({"stats": get_detection_event_stats(scope["customer_id"], owner_user_id=scope["owner_user_id"])})
+
+
+# Serve a fire/smoke snapshot. relpath is "<DD-MM-YYYY>/<type>_<HH-MM-SS>.jpg"
+# (a subfolder path) — <path:> converter, then the same existence +
+# ownership gate as /unknown/<filename>.
+@api.route("/detection-events/image/<int:customer_id>/<path:relpath>", methods=["GET"])
+@module_required("detection_events")
+def detection_event_image(customer_id, relpath):
+
+    current_user = get_current_user()
+    tenant_id = get_tenant_id(current_user)
+
+    if customer_id != tenant_id:
+        return jsonify({"success": False, "message": "Not found."}), 404
+
+    if not event_image_owner_ok(tenant_id, relpath, owner_user_id=_mutation_owner_restriction(current_user)):
+        return jsonify({"success": False, "message": "Not found."}), 404
+
+    return send_from_directory(detection_events_folder(tenant_id), relpath)
+
+
+@api.route("/detection-events/<event_id>", methods=["DELETE"])
+@module_required("detection_events")
+def detection_event_delete(event_id):
+
+    current_user = get_current_user()
+    deleted = delete_detection_event(
+        get_tenant_id(current_user), event_id, owner_user_id=_mutation_owner_restriction(current_user)
+    )
+
+    if not deleted:
+        return jsonify({"success": False, "message": "Detection event not found."}), 404
+
+    return jsonify({"success": True, "message": f"{event_id} deleted successfully."})
+
+
+@api.route("/detection-events/bulk-delete", methods=["POST"])
+@module_required("detection_events")
+def detection_events_bulk_delete():
+
+    current_user = get_current_user()
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids")
+
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"success": False, "message": "No detection events selected."}), 400
+
+    deleted_count = delete_multiple_detection_events(
+        get_tenant_id(current_user), ids, owner_user_id=_mutation_owner_restriction(current_user)
+    )
+
+    return jsonify({"success": True, "deleted": deleted_count})
+
+
+@api.route("/detection-events", methods=["DELETE"])
+@module_required("detection_events")
+def detection_events_clear():
+
+    current_user = get_current_user()
+    deleted_count = delete_all_detection_events(
         get_tenant_id(current_user), owner_user_id=_mutation_owner_restriction(current_user)
     )
 
@@ -1599,9 +1836,13 @@ def ai_detection_settings_get():
 
     current_user = get_current_user()
     target_id = resolve_settings_target_id(current_user, request.args.get("user_id"))
-    full_config = get_ai_config(target_id)
+    tenant_id = get_tenant_id(current_user)
+    full_config = get_ai_config(target_id, tenant_id=tenant_id)
 
-    return jsonify({"ai_config": {key: full_config[key] for key in COMPANY_ADMIN_AI_KEYS}})
+    return jsonify({
+        "ai_config": {key: full_config[key] for key in COMPANY_ADMIN_AI_KEYS},
+        "locked": get_ai_flag_locks(tenant_id),
+    })
 
 
 @api.route("/ai-detection-settings", methods=["PUT"])
@@ -1610,11 +1851,12 @@ def ai_detection_settings_update():
 
     current_user = get_current_user()
     target_id = resolve_settings_target_id(current_user, request.args.get("user_id"))
+    tenant_id = get_tenant_id(current_user)
 
     data = request.get_json(silent=True) or {}
     allowed_only = {key: data[key] for key in COMPANY_ADMIN_AI_KEYS if key in data}
 
-    updated = update_ai_config(target_id, allowed_only)
+    updated = update_ai_config(target_id, allowed_only, tenant_id=tenant_id)
 
     details = ", ".join(f"{k}={updated[k]}" for k in allowed_only)
     if target_id != current_user["id"]:
@@ -1627,7 +1869,11 @@ def ai_detection_settings_update():
         user_id=current_user["id"],
     )
 
-    return jsonify({"success": True, "ai_config": {key: updated[key] for key in COMPANY_ADMIN_AI_KEYS}})
+    return jsonify({
+        "success": True,
+        "ai_config": {key: updated[key] for key in COMPANY_ADMIN_AI_KEYS},
+        "locked": get_ai_flag_locks(tenant_id),
+    })
 
 
 @api.route("/ai-detection-settings/reset", methods=["POST"])
@@ -1636,10 +1882,15 @@ def ai_detection_settings_reset():
 
     current_user = get_current_user()
     target_id = resolve_settings_target_id(current_user, request.args.get("user_id"))
+    tenant_id = get_tenant_id(current_user)
 
-    updated = reset_ai_config(target_id)
+    updated = reset_ai_config(target_id, tenant_id=tenant_id)
 
-    return jsonify({"success": True, "ai_config": {key: updated[key] for key in COMPANY_ADMIN_AI_KEYS}})
+    return jsonify({
+        "success": True,
+        "ai_config": {key: updated[key] for key in COMPANY_ADMIN_AI_KEYS},
+        "locked": get_ai_flag_locks(tenant_id),
+    })
 
 
 # ==============================
@@ -1757,6 +2008,65 @@ def activity_logs_delete_all():
 
 
 # ==============================
+# Leads API (Super Admin only) — landing page Interest & Lead popup
+# submissions (see api/leads.py). Creation is the anonymous
+# POST /public/leads route above; only a Super Admin can view or remove
+# them.
+# ==============================
+@api.route("/leads", methods=["GET"])
+@super_admin_required
+def leads_list():
+
+    return jsonify({"leads": list_leads()})
+
+
+@api.route("/leads/<int:lead_id>", methods=["DELETE"])
+@super_admin_required
+def leads_delete_one(lead_id):
+
+    deleted = delete_lead(lead_id)
+
+    if not deleted:
+        return jsonify({"success": False, "message": "Lead not found."}), 404
+
+    current_user = get_current_user()
+    log_activity(current_user["name"], "Lead Deleted", details=str(lead_id), user_id=current_user["id"])
+
+    return jsonify({"success": True, "message": "Lead deleted."})
+
+
+# ==============================
+# FCM Push Notifications (Super Admin only) — "New Lead" alerts, see
+# notifications/fcm.py. @super_admin_required is what actually keeps a
+# Company Admin/User from ever registering a device here — nothing about
+# how a lead is created or who can call POST /public/leads changes.
+# ==============================
+@api.route("/fcm/register-token", methods=["POST"])
+@super_admin_required
+def fcm_register_token():
+
+    data = request.get_json(silent=True) or {}
+    current_user = get_current_user()
+
+    ok, error = register_fcm_token(current_user["id"], data.get("token"))
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    return jsonify({"success": True, "configured": is_fcm_configured()})
+
+
+@api.route("/fcm/token", methods=["DELETE"])
+@super_admin_required
+def fcm_unregister_token():
+
+    data = request.get_json(silent=True) or {}
+    unregister_fcm_token(data.get("token"))
+
+    return jsonify({"success": True})
+
+
+# ==============================
 # Platform Branding API (Super Admin only)
 # ==============================
 # Platform-wide (Application Name / Logo) — one value for the whole
@@ -1823,6 +2133,49 @@ def branding_delete_logo():
 def branding_logo_file(filename):
 
     return send_from_directory(LOGO_FOLDER, filename)
+
+
+# ==============================
+# Website Settings (Super Admin) — public landing page content. Read
+# access is /public/website-content above (anonymous); only these two
+# routes can change it. Module Package pricing is deliberately NOT here
+# — see /module-packages further below, the single source of truth
+# Website Settings' own Pricing card reads/writes directly. The one
+# exception is the "extend_platform" section's monthly_price/yearly_price
+# — a standalone marketing figure with no BillableItem behind it, so it
+# lives here like any other piece of landing-page copy (see
+# api/website_content.py's module comment for why).
+# ==============================
+@api.route("/website-content/<section_key>", methods=["PUT"])
+@super_admin_required
+def website_content_update_section(section_key):
+
+    data = request.get_json(silent=True) or {}
+    content, error = update_section(section_key, data)
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    current_user = get_current_user()
+    log_activity(current_user["name"], "Website Content Updated", details=section_key, user_id=current_user["id"])
+
+    return jsonify({"success": True, **content})
+
+
+@api.route("/website-content/image/<slot_key>", methods=["PUT"])
+@super_admin_required
+def website_content_update_image(slot_key):
+
+    file = request.files.get("image")
+    content, error = update_image(slot_key, file)
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    current_user = get_current_user()
+    log_activity(current_user["name"], "Website Content Image Updated", details=slot_key, user_id=current_user["id"])
+
+    return jsonify({"success": True, **content})
 
 
 # ==============================
@@ -2368,6 +2721,112 @@ def billing_item_access_set(item_id, customer_id):
     return jsonify({"success": True, "items": items})
 
 
+# ==============================
+# Module Packages (Super Admin) — the 4 purchasable packages, their
+# prices, sub-module toggles, and per-company price / assignment.
+# ==============================
+@api.route("/module-packages", methods=["GET"])
+@super_admin_required
+def module_packages_list():
+
+    customer_id = request.args.get("customer_id", type=int)
+
+    return jsonify(get_package_catalog(customer_id=customer_id))
+
+
+@api.route("/module-packages/<package_key>", methods=["PUT"])
+@super_admin_required
+def module_packages_update(package_key):
+
+    data = request.get_json(silent=True) or {}
+    result, error = update_package(package_key, data)
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    current_user = get_current_user()
+    log_activity(current_user["name"], "Module Package Updated", details=package_key, user_id=current_user["id"])
+
+    return jsonify({"success": True, **result})
+
+
+@api.route("/module-packages/<package_key>/submodules/<submodule_key>", methods=["PUT"])
+@super_admin_required
+def module_packages_submodule_set(package_key, submodule_key):
+
+    data = request.get_json(silent=True) or {}
+    result, error = set_submodule_enabled(package_key, submodule_key, bool(data.get("enabled")))
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    current_user = get_current_user()
+    log_activity(
+        current_user["name"], "Module Sub-module Access Updated",
+        details=f"{package_key}:{submodule_key} enabled={bool(data.get('enabled'))}", user_id=current_user["id"],
+    )
+
+    return jsonify({"success": True, **result})
+
+
+@api.route("/module-packages/<package_key>/override/<int:customer_id>", methods=["PUT"])
+@super_admin_required
+def module_packages_override_set(package_key, customer_id):
+
+    data = request.get_json(silent=True) or {}
+    result, error = set_package_price_override(
+        customer_id, package_key, data.get("monthly_price"), data.get("yearly_price")
+    )
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    current_user = get_current_user()
+    log_activity(
+        current_user["name"], "Module Package Price Override Set",
+        details=f"{package_key} customer_id={customer_id}", user_id=current_user["id"],
+    )
+
+    return jsonify({"success": True, **result})
+
+
+@api.route("/module-packages/<package_key>/override/<int:customer_id>", methods=["DELETE"])
+@super_admin_required
+def module_packages_override_clear(package_key, customer_id):
+
+    result, error = clear_package_price_override(customer_id, package_key)
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    current_user = get_current_user()
+    log_activity(
+        current_user["name"], "Module Package Price Override Cleared",
+        details=f"{package_key} customer_id={customer_id}", user_id=current_user["id"],
+    )
+
+    return jsonify({"success": True, **result})
+
+
+@api.route("/module-packages/<package_key>/assign/<int:customer_id>", methods=["PUT"])
+@super_admin_required
+def module_packages_assign(package_key, customer_id):
+
+    data = request.get_json(silent=True) or {}
+    result, error = assign_package(customer_id, package_key, bool(data.get("owned")))
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    current_user = get_current_user()
+    log_activity(
+        current_user["name"], "Module Package Assignment Updated",
+        details=f"{package_key} customer_id={customer_id} owned={bool(data.get('owned'))}", user_id=current_user["id"],
+    )
+
+    return jsonify({"success": True, **result})
+
+
 @api.route("/billing/config", methods=["GET"])
 @super_admin_required
 def billing_config_get():
@@ -2509,6 +2968,43 @@ def company_checkout():
         current_user["name"],
         "Checkout Completed",
         details=f"items={','.join(i['item_key'] for i in result['payment']['items'])}",
+        user_id=current_user["id"],
+    )
+
+    return jsonify({"success": True, **result})
+
+
+@api.route("/company/module-packages", methods=["GET"])
+@company_admin_required
+@module_required("subscription_payment")
+def company_module_packages():
+
+    current_user = get_current_user()
+
+    return jsonify(get_company_packages(get_tenant_id(current_user)))
+
+
+@api.route("/company/module-packages/checkout", methods=["POST"])
+@company_admin_required
+@module_required("subscription_payment")
+def company_module_packages_checkout():
+
+    current_user = get_current_user()
+    data = request.get_json(silent=True) or {}
+
+    result, error = checkout_packages(
+        get_tenant_id(current_user),
+        data.get("package_keys"),
+        data.get("billing_cycle"),
+    )
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    log_activity(
+        current_user["name"],
+        "Package Checkout Completed",
+        details=f"packages={','.join(result['payment']['packages'])}",
         user_id=current_user["id"],
     )
 
@@ -3559,6 +4055,27 @@ def notification_settings_update_unknown_alert():
         return jsonify({"success": False, "message": error}), 400
 
     log_activity(current_user["name"], "Unknown Person Alert Settings Updated", user_id=current_user["id"])
+
+    return jsonify({"success": True, "settings": updated})
+
+
+@api.route("/notifications/settings/detection-alerts", methods=["PUT"])
+@admin_required
+@rate_limited("notification_settings", max_attempts=30, window_seconds=60)
+def notification_settings_update_detection_alerts():
+    """Vehicle / Fire-Smoke / Animal / Bird alert toggles — each fully
+    independent of the others and of Unknown Person Alert's own toggle
+    (see api/notification_settings.DETECTION_ALERT_KEYS)."""
+
+    current_user = get_current_user()
+    data = request.get_json(silent=True) or {}
+
+    updated, error = update_detection_alert_settings(get_tenant_id(current_user), data)
+
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    log_activity(current_user["name"], "Detection Alert Settings Updated", user_id=current_user["id"])
 
     return jsonify({"success": True, "settings": updated})
 

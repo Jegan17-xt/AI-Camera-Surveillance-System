@@ -30,7 +30,7 @@ export default function SuperAdminProtectedRoute() {
   // them to their own portal instead of a login screen their credentials
   // could never pass.
   if (user?.role !== "Super Admin") {
-    const target = isCompanyAdmin(user) ? "/admin/dashboard" : "/user/dashboard";
+    const target = isCompanyAdmin(user) ? "/admin/user-management" : "/user/dashboard";
     routeLog(`SuperAdminProtectedRoute: REDIRECT -> ${target} (role="${user?.role}" is not Super Admin)`);
     return <Navigate to={target} replace />;
   }

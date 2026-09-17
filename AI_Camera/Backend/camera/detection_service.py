@@ -82,6 +82,7 @@ from auth.models import Camera
 from camera.frame_processor import process_frame, compute_tracking_key, drop_tracking_state
 from camera import ai_prewarm
 from detection.detector import warmup as warmup_yolo, drop_model as drop_yolo_model
+from detection.fire_detector import warmup as warmup_fire
 from face.face_detector import warmup as warmup_face
 from face.track_verifier import drop_tracks
 from error_logging import log_exception
@@ -124,6 +125,87 @@ NO_FRAME_TIMEOUT_SECONDS = 15  # reconnect only once this long has passed with N
 # so slowly it looks abandoned.
 MAX_RECONNECT_DELAY_SECONDS = 60
 STABLE_CONNECTION_SECONDS = 30
+
+
+def _boost_reader_thread_priority():
+    """Root-cause fix for the '720p (and 1080p) detection stalls / camera
+    flaps offline' regression: face/face_detector.py's own comment already
+    documented that InsightFace's per-cycle CPU cost can starve this
+    reader thread badly enough to fail cap.grab()/cap.retrieve() outright
+    (not just run slow) — that's why onnxruntime's intra_op_num_threads is
+    already capped at 2. Confirmed LIVE against real camera 18 that the
+    cap alone is not enough once the source frame is 1280x720+ (720p and
+    1080p — 1080p downscales to the same ~1280px cap before AI, so both
+    tiers hit this): InsightFace's per-FACE alignment/embedding cost scales
+    with each detected face's actual pixel size in the source frame, which
+    is ~4x larger at 1280x720 than at 480p's 640x360 for the same
+    real-world people — measured live: a single `app.get()` call took
+    11.8s (peak 32.5s per the existing comment) with only 2 worker threads
+    computing that whole time, leaving 2 of this 4-core box's cores
+    theoretically free — yet cap.grab() still failed at up to an 89% rate
+    during that exact window (verified: an isolated grab()-only loop
+    against the same live RTSP source, with zero AI running, had a 0%
+    failure rate over the same duration) — i.e. this is a real OS
+    thread-scheduling starvation problem, not a raw CPU-cycles-available
+    problem: this thread's own frequent, short cap.grab()/cap.retrieve()
+    calls were losing the scheduling race against the AI thread's few,
+    long, back-to-back native (GIL-released) computations.
+    THE FIX: raise this thread's own OS scheduling priority one notch
+    above normal so the OS scheduler favors it whenever both threads want
+    a core at the same instant — this changes nothing about detection
+    itself (same models, same thresholds, same accuracy, same frame
+    content); it only makes the OS more consistently hand this
+    short/frequent I/O-bound thread a CPU slice instead of letting a
+    long-running CPU-bound thread monopolize scheduling turns. Windows
+    only (via ctypes; no pywin32 dependency needed) — this deployment's
+    observed platform. Best-effort and never fatal: any failure here
+    (unsupported platform, restricted permissions) is silently ignored,
+    the reader thread runs exactly as before, just without the priority
+    boost."""
+
+    if platform.system() != "Windows":
+        return
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # Explicit argtypes/restype are NOT optional here — without them,
+        # ctypes marshals GetCurrentThread()'s 64-bit pseudo-handle
+        # (0xFFFFFFFFFFFFFFFE) through its default 32-bit-int guess,
+        # silently truncating it. The call then still "succeeds" with no
+        # exception raised, but SetThreadPriority actually fails (verified
+        # live: returns 0 / GetLastError without this fix, returns 1 with
+        # it) — a silent no-op that looks identical to success from a bare
+        # try/except, which is exactly the kind of failure this whole
+        # investigation was about avoiding.
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentThread.restype = wintypes.HANDLE
+        kernel32.SetThreadPriority.argtypes = [wintypes.HANDLE, ctypes.c_int]
+        kernel32.SetThreadPriority.restype = wintypes.BOOL
+
+        THREAD_PRIORITY_ABOVE_NORMAL = 1
+        handle = kernel32.GetCurrentThread()
+        ok = kernel32.SetThreadPriority(handle, THREAD_PRIORITY_ABOVE_NORMAL)
+        print(f"[STREAM] reader thread priority boost {'applied' if ok else 'FAILED (non-fatal)'}")
+    except Exception:
+        pass
+
+
+def _camlog(camera_id, msg):
+    """Uniform `[CAMERA <id>] <MESSAGE>` line — the exact per-camera log
+    shape requested for the pipeline audit (RTSP CONNECTED / FRAME
+    RECEIVED / AI PROCESSING / PERSONS / FACES / OBJECTS / FIRE-SMOKE /
+    DETECTION EVENT CREATED / RTSP DISCONNECTED / RECONNECTING /
+    RECONNECTED), printed ALONGSIDE the existing [CAMERA_CONNECTED] /
+    [RTSP-HEALTH] / [AI DEBUG] / [PIPELINE] lines rather than replacing
+    them — those already carry detail (attempt counts, timings, reasons)
+    this shorter line intentionally leaves out. Skipped for the
+    local-webcam pseudo-camera (camera_id is None there), which was never
+    part of this per-added-camera logging requirement."""
+
+    if camera_id is not None:
+        print(f"[CAMERA {camera_id}] {msg}")
 
 
 def _reconnect_backoff_seconds(consecutive_failures):
@@ -253,6 +335,32 @@ cv2.setNumThreads(2)
 _camera_streams = {}  # camera_id -> worker state dict (see _new_camera_entry)
 _camera_streams_lock = threading.Lock()  # guards the _camera_streams dict itself
 
+# --- Camera Quality Hot-Swap: per-camera restart serialization ---
+# restart_camera_worker() (see below) now runs the NEW-resolution worker
+# side-by-side with the OLD one for a brief overlap instead of stopping
+# the old one first — guards against the two-quality-changes-in-a-row
+# race (Admin clicks 480p->720p, then 720p->1080p again a moment later,
+# before the first swap has finished): without a lock here, both calls
+# would independently read _camera_streams[camera_id] as the same "old"
+# entry, each start their own replacement, and race to overwrite the
+# dict entry/stop the "old" worker — possibly leaving an orphaned
+# worker thread running forever with no reference left to stop it. One
+# lock per camera_id (created lazily, never removed — cheap, and camera_
+# ids are never reused) makes a second restart simply WAIT for the first
+# swap to finish, then run its own swap against whatever is current at
+# that point — always ends in the correct final state, never a race.
+_restart_locks = {}  # camera_id -> threading.Lock()
+_restart_locks_lock = threading.Lock()  # guards the _restart_locks dict itself
+
+
+def _get_restart_lock(camera_id):
+    with _restart_locks_lock:
+        lock = _restart_locks.get(camera_id)
+        if lock is None:
+            lock = threading.Lock()
+            _restart_locks[camera_id] = lock
+        return lock
+
 # --- CPU Concurrency Fix: per-customer lock narrowed to its actual
 # critical section ---
 # This used to be one big lock held around the ENTIRE process_frame()
@@ -354,14 +462,54 @@ def _open_capture(source):
     return cap, opened
 
 
+def _sync_camera_status_to_db(camera_id, entry, online):
+    """Keeps the `cameras.status` column — what Camera Management's list
+    view and every other DB-backed status read shows — truthful against
+    this worker's REAL, live connection state.
+
+    Root-cause fix (Camera Live pipeline audit): before this, `status`
+    was written ONLY at add_camera/update_camera/manual "Test Camera"
+    time (see api/cameras.py) and then never touched again for the rest
+    of that camera's life. A camera that hit a brief RTSP blip and
+    reconnected fine 10 seconds later (exactly the case this whole
+    reconnect/backoff machinery is designed to ride out invisibly) was
+    left showing whatever it showed at the last edit — "Online" forever
+    even while genuinely down, or "Offline" forever even after a clean
+    reconnect — completely decoupled from the actual pipeline. That is
+    the "Live camera becomes OFFLINE automatically [and the UI never
+    reflects reality]" symptom at the Camera Management layer (the
+    separate /live-camera/status/<id> endpoint used by the Live Camera
+    viewer itself already reads this worker's live state directly and
+    was never affected).
+
+    Called only on a genuine online<->offline TRANSITION (see the one
+    call site in _set_online below) — never per-frame — so this is at
+    most a couple of extra UPDATE statements per reconnect cycle, not a
+    per-frame cost. Skipped entirely for the local-webcam pseudo-camera
+    (no `cameras` table row exists for it). Never raises: a DB hiccup
+    here must not take down the reader thread that called it."""
+
+    if entry.get("is_local"):
+        return
+
+    try:
+        with get_session() as session:
+            camera = session.get(Camera, camera_id)
+            if camera is not None:
+                camera.status = "Online" if online else "Offline"
+    except Exception as e:
+        log_exception(e, f"camera status DB sync (camera={camera_id})")
+
+
 def _set_online(camera_id, entry, value):
     """Every write to entry["online"] goes through here now instead of
     a direct assignment, so a genuine online->offline transition (not
     the initial "never yet connected" retries, not a deliberate stop)
     can fire exactly one camera-offline Notification — Per-User Data
-    Isolation's Notifications feature. Detection/streaming behavior is
-    completely unchanged; this only observes the same flag it always
-    set."""
+    Isolation's Notifications feature — and keep the DB `status` column
+    in sync (see _sync_camera_status_to_db above). Detection/streaming
+    behavior is completely unchanged; this only observes the same flag
+    it always set."""
 
     with entry["lock"]:
         was_online = entry["online"]
@@ -369,9 +517,16 @@ def _set_online(camera_id, entry, value):
 
     if value:
         entry["notified_offline"] = False
+        if not was_online:
+            _sync_camera_status_to_db(camera_id, entry, True)
         return
 
-    if was_online and not entry["stop_event"].is_set() and not entry["notified_offline"]:
+    if not was_online:
+        return
+
+    _sync_camera_status_to_db(camera_id, entry, False)
+
+    if not entry["stop_event"].is_set() and not entry["notified_offline"]:
         entry["notified_offline"] = True
         try:
             from api.settings import get_settings
@@ -400,6 +555,7 @@ def _camera_reader_loop(camera_id, entry):
     by, or waiting on, AI processing."""
 
     print(f"[STREAM] Camera {camera_id}: reader thread started")
+    _boost_reader_thread_priority()
 
     # --- RTSP Frame Health tracking (diagnostic only) ---
     # Plain counters, read by nothing else in this codebase — added to
@@ -439,6 +595,7 @@ def _camera_reader_loop(camera_id, entry):
             print(f"[STREAM] Camera {camera_id}: could not open video source, retrying in {delay}s")
             print(f"[CAMERA_RECONNECTING] camera={camera_id} attempt={consecutive_reconnect_failures} delay={delay}s reason=open_failed")
             print(f"[RTSP-HEALTH] camera={camera_id} reconnect started (reason=open_failed, reconnect_count={reconnect_count})")
+            _camlog(camera_id, "RECONNECTING")
             with entry["lock"]:
                 entry["connection_state"] = "disconnected"
                 entry["reconnect_attempt_count"] = consecutive_reconnect_failures
@@ -451,6 +608,9 @@ def _camera_reader_loop(camera_id, entry):
         if reconnect_count > 0:
             print(f"[RTSP-HEALTH] camera={camera_id} reconnect successful (reconnect_count={reconnect_count})")
             print(f"[CAMERA_RECONNECTED] camera={camera_id} after {consecutive_reconnect_failures} failed attempt(s)")
+            _camlog(camera_id, "RECONNECTED")
+        else:
+            _camlog(camera_id, "RTSP CONNECTED")
         with entry["lock"]:
             entry["connection_state"] = "connected"
         _set_online(camera_id, entry, True)
@@ -646,6 +806,7 @@ def _camera_reader_loop(camera_id, entry):
             entry["connection_state"] = "disconnected"
         _set_online(camera_id, entry, False)
         print(f"[CAMERA_OFFLINE] camera={camera_id}")
+        _camlog(camera_id, "RTSP DISCONNECTED")
 
         # Camera Runtime Fix (supersedes the old unconditional-instant-
         # retry behavior from the "Continuous On/Off Investigation" —
@@ -679,12 +840,14 @@ def _camera_reader_loop(camera_id, entry):
                 f"[CAMERA_RECONNECTING] camera={camera_id} attempt={consecutive_reconnect_failures} "
                 f"delay={delay}s reason=connection_unstable (was up {round(connection_duration, 1)}s)"
             )
+            _camlog(camera_id, "RECONNECTING")
             entry["stop_event"].wait(delay)
         else:
             print(
                 f"[CAMERA_RECONNECTING] camera={camera_id} attempt=0 delay=0s reason=brief_blip "
                 f"(was up {round(connection_duration, 1)}s, retrying immediately)"
             )
+            _camlog(camera_id, "RECONNECTING")
 
     print(f"[STREAM] Camera {camera_id}: reader thread stopped")
 
@@ -739,15 +902,27 @@ def _camera_processor_loop(camera_id, entry):
         # fall through anyway — the same warmup_*() calls then do the
         # load themselves, exactly as before this coordination existed,
         # so a camera still always works.
+        print(f"[AI DEBUG] camera {camera_id}: warmup start — waiting for boot pre-warm (state={ai_prewarm.get_state()})")
         if not ai_prewarm.wait_until_ready(timeout=AI_PREWARM_WAIT_SECONDS):
             print(
                 f"[AI ENGINE] Camera {camera_id}: boot pre-warm not ready "
                 f"(state={ai_prewarm.get_state()}) — loading AI models on this thread instead"
             )
 
+        _w = time.perf_counter()
         warmup_yolo(tracking_key)
+        print(f"[AI DEBUG] camera {camera_id}: warmup YOLO ready ({round((time.perf_counter() - _w) * 1000, 1)}ms)")
+        _w = time.perf_counter()
         warmup_face()
+        print(f"[AI DEBUG] camera {camera_id}: warmup InsightFace ready ({round((time.perf_counter() - _w) * 1000, 1)}ms)")
+        # Multi-Object & Fire Detection: pays the fire model's one-time
+        # load cost here too. No-op (and no error) when no fire model is
+        # installed — see detection/fire_detector.py.
+        _w = time.perf_counter()
+        warmup_fire()
+        print(f"[AI DEBUG] camera {camera_id}: warmup Fire/Smoke model ready ({round((time.perf_counter() - _w) * 1000, 1)}ms)")
         print(f"[AI ENGINE] Camera {camera_id}: AI models warmed up in {round((time.perf_counter() - warmup_t0) * 1000, 1)}ms")
+        print(f"[AI DEBUG] camera {camera_id}: warmup complete — entering frame-processing loop")
     except Exception as e:
         log_exception(e, f"AI model warmup (camera={camera_id})")
 
@@ -807,6 +982,9 @@ def _camera_processor_loop(camera_id, entry):
             print(f"[DETECTION_RESUMED] camera={camera_id} — new frames arriving again, AI processing resumed")
             detection_paused = False
 
+        _camlog(camera_id, "FRAME RECEIVED")
+        _camlog(camera_id, "AI PROCESSING")
+
         # No customer-wide lock here anymore — YOLO/InsightFace inference
         # has no shared-state race, so a customer's cameras now run
         # process_frame() fully concurrently. The only part that ever
@@ -815,6 +993,7 @@ def _camera_processor_loop(camera_id, entry):
         # MySQL) now locks itself, narrowly, via camera/processing_locks.py
         # — see that module's docstring.
         print(f"[PIPELINE] Frame decoded successfully (camera={camera_id})")
+        print(f"[AI DEBUG] frame received (camera={camera_id} seq={seq})")
 
         # process_frame() is NOT allowed to take this thread down — an
         # unhandled exception here previously killed the AI processing
@@ -842,6 +1021,7 @@ def _camera_processor_loop(camera_id, entry):
                 entry["last_annotated_frame"] = annotated_frame
                 entry["last_annotated_at"] = time.time()
         except Exception as e:
+            print(f"[AI DEBUG] process_frame RAISED for camera={camera_id} — full traceback follows:")
             log_exception(e, f"process_frame (camera={camera_id}, customer={customer_id})")
 
         last_processed_seq = seq
@@ -940,6 +1120,19 @@ def stop_camera_worker(camera_id):
     if entry is None:
         return
 
+    _stop_worker_entry(camera_id, entry)
+
+
+def _stop_worker_entry(camera_id, entry):
+    """The actual signal-and-join logic stop_camera_worker() above uses —
+    factored out so the Camera Quality Hot-Swap below can stop a SPECIFIC
+    entry object (the old-resolution worker, or an abandoned new one that
+    never got its first frame) without going through _camera_streams at
+    all, since by the time either of those needs stopping the dict may
+    already point at a different (or no) entry for this camera_id. Safe
+    to call on an entry whose threads never started (both .get() calls
+    below return None) — used by the hot-swap's timeout-abort path."""
+
     entry["stop_event"].set()
     print(f"[AI ENGINE] Camera {camera_id}: worker stopping")
 
@@ -985,14 +1178,153 @@ def drop_camera_ai_state(camera_id):
     drop_tracks(camera_id)
 
 
-def restart_camera_worker(camera_id, customer_id, rtsp_url, owner_user_id=None):
-    """Stops whatever worker is currently running for this camera (if
-    any) and starts a fresh one against the new rtsp_url — used when a
-    camera's connection details are edited, so the change takes effect
-    immediately instead of waiting for the next backend restart."""
+# How long restart_camera_worker()'s hot-swap below will wait for the
+# NEW-resolution worker's reader thread to deliver a genuine first
+# decoded frame before giving up and leaving the OLD worker running
+# untouched. A few seconds more than CAMERA_OPEN_TIMEOUT_SECONDS — covers
+# cap.open() itself plus the first grab()/retrieve() pair, without ever
+# blocking much longer than a plain connect attempt already can.
+HOT_SWAP_FIRST_FRAME_TIMEOUT_SECONDS = CAMERA_OPEN_TIMEOUT_SECONDS + 3
+HOT_SWAP_POLL_INTERVAL_SECONDS = 0.1
 
-    stop_camera_worker(camera_id)
-    return start_camera_worker(camera_id, customer_id, rtsp_url, owner_user_id=owner_user_id)
+
+def restart_camera_worker(camera_id, customer_id, rtsp_url, owner_user_id=None):
+    """Camera Quality Hot-Swap — used when a camera's connection details
+    (most commonly its Stream Quality: 480p/720p/1080p) are edited, so
+    the change takes effect immediately instead of waiting for the next
+    backend restart.
+
+    Root-cause fix for "detection stalls immediately after changing
+    camera quality": this used to be a plain stop_camera_worker() +
+    start_camera_worker() — the OLD-resolution worker was torn down
+    COMPLETELY (RTSP disconnected, both threads joined, entry dropped)
+    before the NEW-resolution worker even started opening its own
+    connection. Live view AND detection both went dark for the full
+    old-worker-join time (up to CAMERA_OPEN_TIMEOUT_SECONDS + 5 = 13s)
+    PLUS however long the new, higher-resolution RTSP stream then took
+    to connect and deliver its first frame (up to another
+    CAMERA_OPEN_TIMEOUT_SECONDS = 8s) — a ~21s worst-case gap with
+    nothing flowing at all.
+
+    Now: the NEW-resolution worker's READER thread is started FIRST,
+    running side-by-side with the OLD worker's reader+processor threads
+    — as its own, separate entry, deliberately NOT yet registered under
+    _camera_streams[camera_id], so every other reader of that dict
+    (get_latest_jpeg, get_worker_state, camera/stream.py's MJPEG
+    generator) keeps serving the OLD worker's live frames the entire
+    time this waits — no gap, no half-connected black frame. Once the
+    new reader has decoded a genuine first frame at the new resolution
+    (raw_frame is no longer None — the same signal the old single-worker
+    design would otherwise only observe a full reconnect cycle later),
+    _camera_streams[camera_id] flips over to the new entry — an atomic
+    dict assignment, so nothing ever sees two workers registered for one
+    camera_id at once — and the OLD worker (both its threads) is stopped.
+
+    The NEW entry's PROCESSOR thread is deliberately started only AFTER
+    the OLD worker has fully stopped, never during the overlap — both
+    entries share the exact same tracking_key (camera/frame_processor.
+    py's compute_tracking_key is keyed by camera_id, unaffected by which
+    "generation" of worker is running it), and that per-tracking_key
+    state (detection-persistence overlay, face-gate timestamps, face/
+    track_verifier.py's active consensus tracks) was never designed for
+    two concurrent process_frame() calls against the same key. Video is
+    therefore gap-free (the new reader publishes entry["latest_jpeg"]
+    itself, independent of any processor), while AI/detection resumes
+    right behind it, bounded only by however long the old processor
+    thread's join takes — the same, pre-existing cost stop_camera_worker
+    always had, not a new one.
+
+    Same single-slot raw_frame/raw_frame_seq architecture as always for
+    both the old and new entry — the new worker is a completely ordinary
+    _new_camera_entry(), no queue, nothing about how frames are buffered
+    or how stale ones are (never) processed changes; see
+    _camera_reader_loop/_camera_processor_loop's own docstrings.
+
+    If the new-resolution connection never delivers a first frame within
+    HOT_SWAP_FIRST_FRAME_TIMEOUT_SECONDS (bad URL for this quality tier,
+    camera rejecting the new profile, etc.), the attempt is abandoned,
+    its reader thread is stopped, and the OLD worker is left running
+    completely untouched — a failed quality change degrades to "nothing
+    changed" rather than "camera now offline". The old worker's own
+    RTSP-HEALTH reconnect/backoff machinery is entirely unaffected by any
+    of this; it never even enters the picture during a hot-swap attempt.
+
+    _get_restart_lock(camera_id) serializes overlapping calls for the
+    SAME camera_id (see its own comment) — two quality changes fired in
+    quick succession apply one after another, each against whatever is
+    current at the moment it actually runs, never racing to stop/replace
+    the same entry twice."""
+
+    with _get_restart_lock(camera_id):
+
+        with _camera_streams_lock:
+            old_entry = _camera_streams.get(camera_id)
+
+        if old_entry is None:
+            # No worker currently running for this camera (disabled, or
+            # this is the first start after connection details already
+            # differ from what's saved) — nothing to hot-swap against; a
+            # plain start is both correct and already instant, since
+            # there's no old stream to keep alive in the meantime.
+            return start_camera_worker(camera_id, customer_id, rtsp_url, owner_user_id=owner_user_id)
+
+        print(f"[AI ENGINE] Camera {camera_id}: hot-swap starting new-resolution worker (old worker stays live)")
+
+        new_entry = _new_camera_entry(customer_id, rtsp_url)
+        new_entry["running"] = True
+        new_entry["is_local"] = old_entry.get("is_local", False)
+        new_entry["pipeline_camera_id"] = old_entry.get("pipeline_camera_id", camera_id)
+        new_entry["source_label"] = old_entry.get("source_label", "RTSP")
+        new_entry["owner_user_id"] = owner_user_id
+
+        # Reader only, for now — see the docstring above for why the
+        # processor thread waits until after the old worker is stopped.
+        new_reader = threading.Thread(target=_camera_reader_loop, args=(camera_id, new_entry), daemon=True)
+        new_entry["reader_thread"] = new_reader
+        new_entry["processor_thread"] = None
+        new_reader.start()
+
+        deadline = time.time() + HOT_SWAP_FIRST_FRAME_TIMEOUT_SECONDS
+        got_first_frame = False
+
+        while time.time() < deadline:
+            with new_entry["lock"]:
+                if new_entry["raw_frame"] is not None:
+                    got_first_frame = True
+                    break
+            if new_entry["stop_event"].is_set():
+                break
+            time.sleep(HOT_SWAP_POLL_INTERVAL_SECONDS)
+
+        if not got_first_frame:
+            print(
+                f"[AI ENGINE] Camera {camera_id}: hot-swap new-resolution worker did not deliver a "
+                f"first frame within {HOT_SWAP_FIRST_FRAME_TIMEOUT_SECONDS}s — aborting swap, old worker stays live"
+            )
+            _stop_worker_entry(camera_id, new_entry)
+            return old_entry
+
+        print(f"[AI ENGINE] Camera {camera_id}: hot-swap new-resolution worker live — switching live view over")
+
+        with _camera_streams_lock:
+            _camera_streams[camera_id] = new_entry
+
+        # OLD worker stopped only now, AFTER the new one is already what
+        # every reader is looking at — old_entry is the local reference
+        # captured above, not a fresh dict lookup (the dict no longer
+        # points at it). This joins BOTH of the old worker's threads,
+        # guaranteeing the old processor thread has fully exited before
+        # the new one starts below — the two never run concurrently
+        # against the same tracking_key.
+        _stop_worker_entry(camera_id, old_entry)
+
+        new_processor = threading.Thread(target=_camera_processor_loop, args=(camera_id, new_entry), daemon=True)
+        new_entry["processor_thread"] = new_processor
+        new_processor.start()
+
+        print(f"[AI ENGINE] Camera {camera_id}: hot-swap complete")
+
+        return new_entry
 
 
 def get_worker_state(camera_id):

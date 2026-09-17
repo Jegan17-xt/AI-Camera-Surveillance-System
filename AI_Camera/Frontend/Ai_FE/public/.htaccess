@@ -1,16 +1,51 @@
+# PWA manifest MIME type — Apache's stock mime.types has no mapping for
+# .webmanifest, so manifest.webmanifest / manifest-admin.webmanifest /
+# manifest-super-admin.webmanifest were being served with NO Content-Type
+# header at all. Desktop Chrome's installability check parses a linked
+# manifest as JSON regardless of Content-Type, so the "Install" option
+# still appeared there — but Android Chrome's install-eligibility check
+# is documented to require a JSON-compatible Content-Type on the manifest
+# response. Necessary but NOT sufficient on its own — see the per-role
+# SPA-fallback rules below for the other half of this fix.
+<IfModule mod_mime.c>
+  AddType application/manifest+json .webmanifest
+</IfModule>
+
 # SPA fallback for Apache: this is a React Router app — every route other
 # than the built assets is virtual (handled client-side), not a real file
 # on disk. Without this, a direct hit or refresh on e.g. /admin/login
-# never reaches index.html; Apache 404s it before React Router ever runs.
+# never reaches an HTML shell; Apache 404s it before React Router ever runs.
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteBase /
 
-  # Real files/directories (JS/CSS/images/favicon, etc.) are served as-is.
+  # Real files/directories (JS/CSS/images/favicon, admin.html/
+  # super-admin.html themselves, etc.) are served as-is.
   RewriteCond %{REQUEST_FILENAME} -f [OR]
   RewriteCond %{REQUEST_FILENAME} -d
   RewriteRule ^ - [L]
 
-  # Everything else falls back to index.html so the app can render the route.
+  # /admin/* and /super-admin/* fall back to their OWN HTML shell
+  # (admin.html / super-admin.html — see vite.config.js's multi-page
+  # build), not the plain index.html every other route uses. Each shell
+  # is byte-identical to index.html except for one static
+  # <link rel="manifest"> tag already baked into its served HTML — unlike
+  # index.html, which relies on src/components/DynamicManifestLink.jsx to
+  # add that link via JS after the page mounts. Confirmed necessary: with
+  # only the Content-Type fix above (and the JS-injected manifest),
+  # Android Chrome still offered "Create shortcut" instead of the full
+  # "Install app" — a documented Android-only installability check that
+  # requires the manifest to be present in the page's actual served HTML,
+  # not added afterward. DynamicManifestLink keeps running underneath
+  # this on every page (including these two shells) and still correctly
+  # removes/swaps the manifest link for in-app client-side navigation
+  # (e.g. Admin's "User Sign In" link to /user/login) that never hits
+  # this server-side rule at all.
+  RewriteRule ^admin(/.*)?$ admin.html [L]
+  RewriteRule ^super-admin(/.*)?$ super-admin.html [L]
+
+  # Everything else (/, /user/*, ...) falls back to plain index.html —
+  # no manifest link there at all, so it stays a normal, non-installable
+  # website, exactly as before.
   RewriteRule ^ index.html [L]
 </IfModule>

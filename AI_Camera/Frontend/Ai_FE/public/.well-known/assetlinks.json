@@ -1,0 +1,26 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "in.zynez.admin",
+      "sha256_cert_fingerprints": [
+        "DD:61:06:26:A7:27:D8:A5:DC:6A:B2:89:BB:91:27:9F:80:B3:60:C9:0C:AB:DD:25:31:A7:A9:35:6C:A3:1C:D1"
+      ]
+    }
+  },
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "in.zynez.superadmin",
+      "sha256_cert_fingerprints": [
+        "D5:28:41:70:49:38:87:01:28:01:F5:6B:25:22:44:CC:E2:7D:AB:B2:98:5A:4D:A0:8D:E7:15:17:85:A7:30:AD"
+      ]
+    }
+  }
+]

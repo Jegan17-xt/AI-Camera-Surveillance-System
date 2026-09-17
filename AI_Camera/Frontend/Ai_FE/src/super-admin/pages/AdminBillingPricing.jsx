@@ -18,6 +18,10 @@ import {
   Clock,
   Users,
   RotateCcw,
+  Boxes,
+  Camera,
+  ShieldAlert,
+  FileBarChart2,
 } from "lucide-react";
 import AdminPageHeader from "../ui/AdminPageHeader";
 import AdminCard from "../ui/AdminCard";
@@ -58,6 +62,22 @@ const CATEGORY_ICONS = {
   Storage: HardDrive,
   "Hosting / Infrastructure": Server,
   "Notifications / Communication": Bell,
+};
+
+// The 4 purchasable Module Packages (Backend/api/module_packages.py) are
+// managed on this same page — separate section, separate endpoints
+// (/module-packages*), never mixed into the add-on BillableItem catalog.
+const PACKAGE_ICON = {
+  cameras: Camera,
+  people: Users,
+  security: ShieldAlert,
+  reports: FileBarChart2,
+};
+
+const SUBMODULE_KIND_LABEL = {
+  module: "Page",
+  ai_flag: "Detection",
+  always: "Always on",
 };
 
 // unit_type is a real, backend-meaningful field (what quantity a price
@@ -104,6 +124,162 @@ function PriceField({ label, suffix, value, onChange, error }) {
   );
 }
 
+// One Module Package — Monthly / Yearly price, Active/Inactive status,
+// and the sub-modules it unlocks with per-sub-module enable/disable.
+// Price edits hit /module-packages/<key> (global scope) or
+// /module-packages/<key>/override/<customer_id> (per-Admin scope);
+// status + sub-module toggles are global-only.
+function PackagePricingCard({
+  pkg,
+  form,
+  isGlobalScope,
+  selectedAdminName,
+  onField,
+  onSave,
+  onResetOverride,
+  onToggleSubmodule,
+  saving,
+  busySub,
+}) {
+  const Icon = PACKAGE_ICON[pkg.package_key] || Boxes;
+  const yearlySaving = Number(form.monthly_price || 0) * 12 - Number(form.yearly_price || 0);
+
+  return (
+    <AdminCard className="flex flex-col p-4 sm:p-5">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-9 w-9 items-center justify-center rounded-md bg-admin-accent/10 text-admin-accent">
+            <Icon size={17} />
+          </span>
+          <p className="font-display text-sm font-semibold text-white">{pkg.name}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {!isGlobalScope && (
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs font-medium tracking-wide ${
+                pkg.is_override
+                  ? "border-admin-gold/30 bg-admin-gold/10 text-admin-gold"
+                  : "border-ink-500/30 bg-ink-500/10 text-ink-400"
+              }`}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              {pkg.is_override ? "Custom" : "Global"}
+            </span>
+          )}
+          <AdminBadge status={form.enabled ? "Active" : "Inactive"} />
+        </div>
+      </div>
+
+      {isGlobalScope ? (
+        <>
+          <div className="mb-4 rounded-lg border border-white/10 bg-white/[0.02] px-4 py-1">
+            <AdminToggle
+              label="Status"
+              description={form.enabled ? "Active — purchasable by Company Admins." : "Inactive — hidden from checkout."}
+              checked={!!form.enabled}
+              onChange={(v) => onField(pkg.package_key, "enabled", v)}
+            />
+          </div>
+          <div className="mb-4">
+            <label className="mb-1.5 block text-xs font-medium text-ink-400">Description</label>
+            <input
+              type="text"
+              value={form.description || ""}
+              onChange={(e) => onField(pkg.package_key, "description", e.target.value)}
+              placeholder="Shown to Company Admins on their checkout page"
+              className={inputClass}
+            />
+          </div>
+        </>
+      ) : (
+        <p className="mb-4 rounded-lg border border-admin-gold/20 bg-admin-gold/5 px-3.5 py-2.5 text-[11px] text-ink-300">
+          Editing the price for <span className="font-medium text-white">{selectedAdminName || "this Admin"}</span> only.
+          Status and sub-module access are global — switch scope to “All Admins” to change them.
+        </p>
+      )}
+
+      <div className="mb-3 grid grid-cols-2 gap-3">
+        <PriceField
+          label="Monthly Price"
+          suffix="/ month"
+          value={form.monthly_price ?? ""}
+          onChange={(v) => onField(pkg.package_key, "monthly_price", v)}
+        />
+        <PriceField
+          label="Yearly Price"
+          suffix="/ year"
+          value={form.yearly_price ?? ""}
+          onChange={(v) => onField(pkg.package_key, "yearly_price", v)}
+        />
+      </div>
+
+      {!isGlobalScope && pkg.is_override && (
+        <p className="mb-3 text-[11px] text-ink-500">
+          Global price is {formatAmount(pkg.global_monthly_price)}/mo, {formatAmount(pkg.global_yearly_price)}/yr
+        </p>
+      )}
+
+      {yearlySaving > 0 && (
+        <p className="mb-3 inline-flex w-fit items-center gap-1 rounded-md bg-signal-green/10 px-2.5 py-1 text-[11px] font-medium text-signal-green">
+          <Percent size={11} />
+          Save {formatAmount(yearlySaving)}/yr vs. paying monthly
+        </p>
+      )}
+
+      <div className="mb-4">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-ink-500">Sub-modules</p>
+        <div className="divide-y divide-white/5 rounded-md admin-panel px-4 py-1">
+          {pkg.submodules.map((sub) => {
+            const on = sub.kind === "always" ? true : !!sub.enabled;
+            return (
+              <AdminToggle
+                key={sub.submodule_key}
+                label={
+                  <span className="flex items-center gap-2">
+                    {sub.label}
+                    <span className="text-[11px] text-ink-500">
+                      ({SUBMODULE_KIND_LABEL[sub.kind] || sub.kind})
+                    </span>
+                  </span>
+                }
+                description={
+                  sub.kind === "always"
+                    ? "Always available with this package."
+                    : on
+                    ? "Unlocked when this package is purchased."
+                    : "Not included even if the package is purchased."
+                }
+                checked={on}
+                disabled={
+                  !isGlobalScope ||
+                  sub.kind === "always" ||
+                  busySub === `${pkg.package_key}:${sub.submodule_key}`
+                }
+                onChange={() => onToggleSubmodule(pkg, sub)}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-auto flex items-center justify-end gap-2 border-t border-white/5 pt-3">
+        {!isGlobalScope && pkg.is_override && (
+          <button
+            type="button"
+            onClick={() => onResetOverride(pkg)}
+            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-ink-400 hover:bg-white/5 hover:text-ink-200"
+          >
+            <RotateCcw size={13} /> Reset to global
+          </button>
+        )}
+        <AdminButton icon={CheckCircle2} onClick={() => onSave(pkg)} disabled={saving}>
+          {saving ? "Saving…" : "Save Price"}
+        </AdminButton>
+      </div>
+    </AdminCard>
+  );
+}
+
 function emptyEditForm(item) {
   return {
     name: item.name,
@@ -130,8 +306,8 @@ const emptyNewItem = {
 };
 
 // Super Admin's full CRUD over every billable item across every
-// category — the single source of truth Company Admin's checkout page
-// (admin/pages/SubscriptionPayment.jsx) reads prices/availability from.
+// category — the single source of truth Company Admin's Billing & Payment
+// page (admin/pages/BillingPayment.jsx) reads prices/availability from.
 // Backed by Backend/api/billing.py (GET/POST /billing/items, PUT/DELETE
 // /billing/items/<id>). Pure UI/UX redesign — no pricing calculation,
 // no schema, and no API contract changed from the previous version of
@@ -166,8 +342,122 @@ export default function AdminBillingPricing() {
   const [addErrors, setAddErrors] = useState({});
   const [adding, setAdding] = useState(false);
 
+  // Module Packages (Backend/api/module_packages.py) — priced on this
+  // same page, distinct endpoints from the add-on BillableItem catalog.
+  const [packages, setPackages] = useState([]);
+  const [pkgForms, setPkgForms] = useState({});
+  const [pkgLoading, setPkgLoading] = useState(true);
+  const [pkgSavingKey, setPkgSavingKey] = useState(null);
+  const [pkgBusySub, setPkgBusySub] = useState(null);
+
   const isGlobalScope = scope === SCOPE_ALL;
   const selectedAdmin = isGlobalScope ? null : admins.find((a) => String(a.customer_id) === String(scope));
+
+  const hydratePackages = (list) => {
+    setPackages(list);
+    setPkgForms(
+      Object.fromEntries(
+        list.map((p) => [
+          p.package_key,
+          {
+            monthly_price: String(p.monthly_price ?? 0),
+            yearly_price: String(p.yearly_price ?? 0),
+            description: p.description || "",
+            enabled: p.enabled,
+          },
+        ])
+      )
+    );
+  };
+
+  const fetchPackages = (currentScope) => {
+    setPkgLoading(true);
+
+    const url =
+      currentScope && currentScope !== SCOPE_ALL
+        ? `${API_BASE_URL}/module-packages?customer_id=${currentScope}`
+        : `${API_BASE_URL}/module-packages`;
+
+    return axios
+      .get(url)
+      .then((res) => hydratePackages(res.data.packages || []))
+      .catch((err) => console.error("Module Packages API Error :", err))
+      .finally(() => setPkgLoading(false));
+  };
+
+  const setPkgField = (key, field, value) =>
+    setPkgForms((prev) => ({ ...prev, [key]: { ...prev[key], [field]: value } }));
+
+  const savePackage = (pkg) => {
+    const form = pkgForms[pkg.package_key];
+    const monthly = Number(form.monthly_price);
+    const yearly = Number(form.yearly_price);
+
+    if (Number.isNaN(monthly) || monthly < 0 || Number.isNaN(yearly) || yearly < 0) {
+      setToast({ type: "error", message: "Enter valid, non-negative prices." });
+      return;
+    }
+
+    setPkgSavingKey(pkg.package_key);
+
+    const request = isGlobalScope
+      ? axios.put(`${API_BASE_URL}/module-packages/${pkg.package_key}`, {
+          monthly_price: monthly,
+          yearly_price: yearly,
+          description: form.description.trim(),
+          enabled: form.enabled,
+        })
+      : axios.put(`${API_BASE_URL}/module-packages/${pkg.package_key}/override/${scope}`, {
+          monthly_price: monthly,
+          yearly_price: yearly,
+        });
+
+    request
+      .then((res) => {
+        hydratePackages(res.data.packages || []);
+        const who = isGlobalScope ? "" : ` for ${selectedAdmin?.customer_name || "this Admin"}`;
+        setToast({ type: "success", message: `${pkg.name} package pricing saved${who}.` });
+      })
+      .catch((err) => {
+        setToast({ type: "error", message: err.response?.data?.message || "Failed to save package pricing." });
+      })
+      .finally(() => setPkgSavingKey(null));
+  };
+
+  const resetPackageOverride = (pkg) => {
+    if (!window.confirm(`Reset "${pkg.name}" back to the global price for ${selectedAdmin?.customer_name || "this Admin"}?`))
+      return;
+
+    axios
+      .delete(`${API_BASE_URL}/module-packages/${pkg.package_key}/override/${scope}`)
+      .then((res) => {
+        hydratePackages(res.data.packages || []);
+        setToast({ type: "success", message: `${pkg.name} reverted to global pricing.` });
+      })
+      .catch((err) => {
+        setToast({ type: "error", message: err.response?.data?.message || "Failed to reset pricing." });
+      });
+  };
+
+  const togglePackageSubmodule = (pkg, sub) => {
+    setPkgBusySub(`${pkg.package_key}:${sub.submodule_key}`);
+
+    axios
+      .put(`${API_BASE_URL}/module-packages/${pkg.package_key}/submodules/${sub.submodule_key}`, {
+        enabled: !sub.enabled,
+      })
+      .then((res) => {
+        hydratePackages(res.data.packages || []);
+        setToast({
+          type: "success",
+          message: `${sub.label} ${!sub.enabled ? "enabled" : "disabled"} for the ${pkg.name} package.`,
+        });
+      })
+      .catch((err) => {
+        setToast({ type: "error", message: err.response?.data?.message || "Failed to update sub-module." });
+      })
+      .finally(() => setPkgBusySub(null));
+  };
 
   const fetchItems = (currentScope) => {
     setLoading(true);
@@ -197,6 +487,7 @@ export default function AdminBillingPricing() {
 
   useEffect(() => {
     fetchItems(scope);
+    fetchPackages(scope);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope]);
 
@@ -403,10 +694,10 @@ export default function AdminBillingPricing() {
     <div>
       <AdminPageHeader
         eyebrow="Billing & Payments"
-        title="Billing & Pricing"
+        title="Pricing"
         description={
           isGlobalScope
-            ? "Set the Monthly and Yearly price for every billable item. Company Admins can only view enabled items, select what they need, and pay — pricing is controlled entirely from here."
+            ? "Set the Monthly and Yearly price and sub-module access for every module package and add-on. Company Admins buy packages on their Subscription & Payment page — pricing is controlled entirely from here."
             : `Editing pricing for ${selectedAdmin?.customer_name || "this Admin"} only — other Admins keep their own pricing (global or custom) untouched.`
         }
       />
@@ -428,9 +719,58 @@ export default function AdminBillingPricing() {
         <p className="mt-2 text-[11px] text-ink-500">
           {isGlobalScope
             ? "Prices set here apply to every Admin who doesn't have a custom override."
-            : "Only Monthly/Yearly pricing can be customized per Admin — the item catalog itself stays global."}
+            : "Only Monthly/Yearly pricing can be customized per Admin — the catalog itself stays global."}
         </p>
       </AdminCard>
+
+      {/* Module Packages — the 4 purchasable bundles Company Admins buy on
+          their Subscription & Payment page. Priced here; unlocked by
+          purchase. */}
+      <div className="mb-6">
+        <div className="mb-3 flex items-center gap-2">
+          <Boxes size={15} className="text-admin-accent" />
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink-300">Module Packages</p>
+          <span className="font-mono text-[11px] text-ink-600">({packages.length})</span>
+        </div>
+
+        {pkgLoading ? (
+          <AdminCard className="p-4 sm:p-5">
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-ink-500">
+              <Loader2 size={20} className="animate-spin text-admin-accent" />
+              <p className="text-xs">Loading packages…</p>
+            </div>
+          </AdminCard>
+        ) : packages.length === 0 ? (
+          <AdminCard className="p-4 sm:p-5">
+            <p className="py-8 text-center text-xs text-ink-500">No module packages configured.</p>
+          </AdminCard>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {packages.map((pkg) => (
+              <PackagePricingCard
+                key={pkg.package_key}
+                pkg={pkg}
+                form={pkgForms[pkg.package_key] || {}}
+                isGlobalScope={isGlobalScope}
+                selectedAdminName={selectedAdmin?.customer_name}
+                onField={setPkgField}
+                onSave={savePackage}
+                onResetOverride={resetPackageOverride}
+                onToggleSubmodule={togglePackageSubmodule}
+                saving={pkgSavingKey === pkg.package_key}
+                busySub={pkgBusySub}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {isGlobalScope && (
+        <div className="mb-3 flex items-center gap-2">
+          <Tag size={15} className="text-admin-accent" />
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink-300">Add-ons</p>
+        </div>
+      )}
 
       <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <AdminStatCard label="Total Billable Items" value={loading ? "—" : summary.total} delta="Across every category" icon="Package" tone="violet" />

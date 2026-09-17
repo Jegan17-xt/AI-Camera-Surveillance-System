@@ -1,6 +1,6 @@
 import { useState } from "react";
 import axios from "axios";
-import { LogIn, ScanFace, History, Trash2 } from "lucide-react";
+import { LogIn, ScanFace, History, Trash2, Car, PawPrint, Bird, Flame, Cloud } from "lucide-react";
 import GlassCard from "./ui/GlassCard";
 import Button from "./ui/Button";
 import Modal from "./ui/Modal";
@@ -13,6 +13,13 @@ import { API_BASE_URL } from "../lib/apiBase";
 const iconMap = {
   "person-entered": { icon: LogIn, tone: "text-signal-green bg-signal-green/10" },
   "unknown-detected": { icon: ScanFace, tone: "text-signal-red bg-signal-red/10" },
+  // Multi-Object & Fire Detection — same backend feed
+  // (Backend/api/dashboard.py get_recent_activity), new event types.
+  "vehicle-detected": { icon: Car, tone: "text-accent-cyan bg-accent-cyan/10" },
+  "animal-detected": { icon: PawPrint, tone: "text-signal-amber bg-signal-amber/10" },
+  "bird-detected": { icon: Bird, tone: "text-accent-cyan bg-accent-cyan/10" },
+  "fire-detected": { icon: Flame, tone: "text-signal-red bg-signal-red/10" },
+  "smoke-detected": { icon: Cloud, tone: "text-ink-300 bg-white/10" },
 };
 
 export default function RecentActivity({ items, onChanged }) {

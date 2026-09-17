@@ -326,6 +326,18 @@ class CustomerAiSetting(Base):
     unknown_duplicate_threshold = Column(Float, nullable=False, default=0.50)
     face_quality_enabled = Column(Integer, nullable=False, default=1)
     tracking_enabled = Column(Integer, nullable=False, default=1)
+    # Multi-Object & Fire Detection — per-company master switches for the
+    # non-face detection paths added alongside the existing YOLO person
+    # pipeline (see camera/frame_processor.py). All default ON, same
+    # "brand-new customer gets the full pipeline" convention as every
+    # toggle above. object/animal detection reuse the existing single
+    # YOLOv8 model (just a widened class list — see detection/detector.py);
+    # fire detection uses a separate, optional, pluggable model
+    # (detection/fire_detector.py) that stays inactive if no model file is
+    # installed regardless of this flag.
+    object_detection_enabled = Column(Integer, nullable=False, default=1)
+    animal_detection_enabled = Column(Integer, nullable=False, default=1)
+    fire_detection_enabled = Column(Integer, nullable=False, default=1)
     created_at = Column(String(30), nullable=False)
     updated_at = Column(String(30), nullable=False)
 
@@ -513,6 +525,43 @@ class PaymentItem(Base):
     price = Column(Float, nullable=False)
 
 
+class ModulePackageSubmodule(Base):
+    """One row per (package, sub-module) pair — the Super-Admin-controlled
+    composition of the 4 purchasable packages (Cameras / People /
+    Security & Detection / Reports). The package itself is a
+    `BillableItem` with item_key "package:<package_key>" and
+    activation_type "package" (price / yearly_price / enabled /
+    description all live there); this table only records WHICH
+    sub-features that package unlocks and whether each is globally
+    switched on.
+
+    `kind`:
+      - "module"  -> submodule_key is a real module_key from
+        auth.database.MODULES; owning the package (and this row being
+        enabled) grants it via auth.auth.get_effective_modules.
+      - "ai_flag" -> submodule_key is a CustomerAiSetting boolean column
+        (object_detection_enabled / animal_detection_enabled /
+        fire_detection_enabled); gated live in api.ai_config.get_ai_config.
+      - "always"  -> informational only (e.g. "Alerts"), always available.
+
+    `enabled` is the platform-wide toggle ("Control sub-module access" on
+    the Super Admin's Module Packages page). Per-company price lives in
+    billable_item_price_overrides; per-company package ownership lives in
+    subscription_items (item_key "package:<key>")."""
+
+    __tablename__ = "module_package_submodules"
+    __table_args__ = (UniqueConstraint("package_key", "submodule_key"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    package_key = Column(String(40), nullable=False)
+    submodule_key = Column(String(60), nullable=False)
+    kind = Column(String(20), nullable=False, default="module")
+    label = Column(String(80), nullable=False)
+    enabled = Column(Integer, nullable=False, default=1)
+    display_order = Column(Integer, nullable=False, default=0)
+    updated_at = Column(String(30), nullable=False)
+
+
 # ==============================================================
 # Registered Persons / Attendance / Unknown Persons / Reports
 # ==============================================================
@@ -625,6 +674,66 @@ class UnknownPerson(Base):
     owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
 
+class DetectionEvent(Base):
+    """Multi-Object & Fire Detection — one row per distinct non-face
+    detection episode (a vehicle, an animal, a fire, smoke) produced by
+    the AI pipeline (camera/frame_processor.py -> events/manager.py).
+
+    Deliberately NOT used for registered-person or unknown-face events:
+    those already have Attendance / UnknownPerson as their source of
+    truth, and api/detection_events.py MERGES them into the unified
+    events view at read time rather than duplicating a write here (same
+    "merge several real sources" pattern api/dashboard.py's
+    get_recent_activity already uses). person_name stays reserved for a
+    possible future use.
+
+    Brand-new table — created by Base.metadata.create_all() in
+    auth.database.init_db(), no ALTER TABLE migration needed, same as
+    the Notification table above. Snapshot images (fire/smoke) stay
+    filesystem-based under dataset/customers/<id>/events/<date>/, exactly
+    like UnknownPerson's face/frame crops — only this metadata row lives
+    in MySQL."""
+
+    __tablename__ = "detection_events"
+    # Every list/stats query filters WHERE customer_id = ? AND created_at
+    # [range] and/or event_type — same composite-index reasoning as
+    # Attendance / UnknownPerson above.
+    __table_args__ = (
+        Index("ix_detection_events_customer_created", "customer_id", "created_at"),
+        Index("ix_detection_events_customer_type", "customer_id", "event_type"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.camera_id", ondelete="SET NULL"), nullable=True, index=True)
+    # Per-User Data Isolation — auto-derived from Camera.owner_user_id at
+    # creation time (see events/manager.py), same rule as
+    # Attendance.owner_user_id / UnknownPerson.owner_user_id.
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # CAR_DETECTED | ANIMAL_DETECTED | FIRE_DETECTED | SMOKE_DETECTED
+    event_type = Column(String(40), nullable=False, index=True)
+    # The concrete model class name — "car", "motorcycle", "dog", "cat",
+    # "fire", "smoke", ... — so the dashboard can show "Car 92%" / "Dog
+    # 91%" without a second lookup, and new animal/vehicle classes need
+    # no schema change.
+    object_type = Column(String(40), nullable=True)
+    person_name = Column(String(100), nullable=True)  # reserved — see class docstring
+    confidence = Column(Float, nullable=True)
+    # Snapshot filename (relative to dataset/customers/<id>/events/) —
+    # populated for FIRE/SMOKE, NULL for vehicle/animal (a continuous
+    # box overlay, no evidence still needed).
+    image_path = Column(String(255), nullable=True)
+    detected_time = Column(String(30), nullable=False, index=True)  # "%d-%m-%Y %H:%M:%S"
+    last_seen = Column(String(30), nullable=False)
+    # Bumped (instead of inserting a new row) every time the same
+    # continuously-visible object/fire is re-detected inside the dedup
+    # window — see events/manager.py.
+    detection_count = Column(Integer, nullable=False, default=1)
+    location = Column(String(120), nullable=True)
+    status = Column(String(20), nullable=False, default="Active")
+    created_at = Column(String(30), nullable=False, index=True)
+
+
 class Report(Base):
     __tablename__ = "reports"
     __table_args__ = (UniqueConstraint("customer_id", "file_path", name="uq_report_per_customer_file"),)
@@ -693,9 +802,38 @@ class NotificationSettings(Base):
     unknown_alert_recipient = Column(String(30), nullable=True)
     unknown_alert_template = Column(Text, nullable=True)  # NULL = use the built-in approved template
     unknown_alert_send_image = Column(Integer, nullable=False, default=1)
-    unknown_alert_min_confidence = Column(Float, nullable=False, default=0.0)
+    # Root-cause fix (2026-09-07): this is compared against
+    # face/unknown_manager.py's `confidence` — a cosine SIMILARITY score
+    # against the closest REGISTERED face (the same score that classifies
+    # someone as "Unknown" in the first place: below recognition_threshold).
+    # For a genuine stranger that score is naturally low and often
+    # slightly NEGATIVE — cosine similarity's real range is [-1, 1], not
+    # [0, 1]. A default of 0.0 silently discarded roughly half of all
+    # real Unknown Person alerts (any detection with a negative score),
+    # with zero Admin visibility (no UI field exists for this column at
+    # all — see api/notification_settings.py's validate_unknown_alert_settings,
+    # now allowing -1..1). -1.0 is the scale's true floor, so this default
+    # is "off" (never blocks) until an Admin/API caller deliberately sets
+    # a stricter value.
+    unknown_alert_min_confidence = Column(Float, nullable=False, default=-1.0)
     unknown_alert_cooldown_minutes = Column(Integer, nullable=False, default=5)
     unknown_alert_dedup_enabled = Column(Integer, nullable=False, default=1)
+
+    # --- Per-Detection-Type Alert Toggles (Vehicle/Fire-Smoke/Animal/Bird)
+    # ---
+    # Independent of unknown_alert_enabled above — that one governs ONLY
+    # the Unknown Person Alert (its own recipient/template/etc are all
+    # specific to it), never these. Each of these four fully and
+    # independently decides whether its own detection type's WhatsApp
+    # alert sends — see notifications/service.py's deliver_ai_detection_
+    # alert and api/notification_settings.py's
+    # log_and_check_notifications_enabled. Detection/saving/dashboard
+    # display for these types is completely unaffected by any of these
+    # four columns — they gate notification DELIVERY only.
+    vehicle_alert_enabled = Column(Integer, nullable=False, default=0)
+    fire_smoke_alert_enabled = Column(Integer, nullable=False, default=0)
+    animal_alert_enabled = Column(Integer, nullable=False, default=0)
+    bird_alert_enabled = Column(Integer, nullable=False, default=0)
 
     # --- Daily Report ---
     daily_report_enabled = Column(Integer, nullable=False, default=0)
@@ -826,5 +964,56 @@ class UserNotificationSettings(Base):
     daily_unknown_count_enabled = Column(Integer, nullable=False, default=0)
     daily_report_enabled = Column(Integer, nullable=False, default=0)
     daily_report_time = Column(String(5), nullable=False, default="18:30")  # 24h "HH:MM"
+    created_at = Column(String(30), nullable=False)
+
+
+class Lead(Base):
+    """Anonymous visitor capture submissions — either the landing page's
+    Interest & Lead popup or the landing page's Contact section form
+    (see api/leads.py). No FOREIGN KEY to `users`, a lead is not an
+    account. Name/phone are required; address/email are optional, same
+    shape api/website_content.py's contact fields use. `source`
+    distinguishes which of the two forms a row came from, shown in
+    Super Admin > Leads.
+
+    latitude/longitude: the visitor's real GPS coordinates, ONLY when
+    their browser's Geolocation API permission prompt was granted — see
+    Frontend/Ai_FE/src/lib/geolocation.js. Both stay NULL whenever
+    permission is denied, unavailable, or the request times out/errors;
+    a lead is always saved either way, this is purely optional,
+    best-effort metadata never required for a successful submission."""
+
+    __tablename__ = "leads"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    phone = Column(String(30), nullable=False)
+    address = Column(String(255), nullable=True)
+    email = Column(String(255), nullable=True)
+    source = Column(String(30), nullable=False, default="Landing Page")
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    created_at = Column(String(30), nullable=False)
+    updated_at = Column(String(30), nullable=False)
+
+
+class FcmToken(Base):
+    """Firebase Cloud Messaging web-push device tokens (see
+    notifications/fcm.py) — registered by a Super Admin's own browser/TWA
+    session (Super Admin > Leads push notifications) so a new Lead can
+    push a real OS-level notification even while that browser/TWA is
+    backgrounded or fully closed. `user_id` is always a Super Admin
+    account (enforced at the route, not here) — a Company Admin/User is
+    never notified. One row per (user, browser/device) pair: `token` is
+    unique because FCM issues a fresh, different token per browser
+    profile/device, and the SAME token can be re-registered (e.g. token
+    refresh, or the same tab registering again) without creating a
+    duplicate row — see notifications.fcm.register_token's upsert."""
+
+    __tablename__ = "fcm_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token = Column(String(255), nullable=False, unique=True)
     created_at = Column(String(30), nullable=False)
     updated_at = Column(String(30), nullable=False)

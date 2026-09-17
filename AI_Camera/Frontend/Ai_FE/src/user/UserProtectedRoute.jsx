@@ -34,8 +34,8 @@ export default function UserProtectedRoute() {
   }
 
   if (isCompanyAdmin(user)) {
-    routeLog("UserProtectedRoute: REDIRECT -> /admin/dashboard (role=\"Company Admin\" on User portal)");
-    return <Navigate to="/admin/dashboard" replace />;
+    routeLog("UserProtectedRoute: REDIRECT -> /admin/user-management (role=\"Company Admin\" on User portal)");
+    return <Navigate to="/admin/user-management" replace />;
   }
 
   routeLog(`UserProtectedRoute: authenticated, rendering Outlet for path=${location.pathname}`);

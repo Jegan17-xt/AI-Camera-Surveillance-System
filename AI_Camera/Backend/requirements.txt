@@ -18,6 +18,34 @@ reportlab==4.4.7
 # silently rely on whatever version another package happened to pull in.
 cryptography==46.0.3
 
+# YOLOv8 object/person/vehicle/animal detection (detection/detector.py) and
+# the optional fire/smoke model (detection/fire_detector.py). ultralytics
+# was imported by the code but never declared here — a fresh
+# `pip install -r requirements.txt` would install everything EXCEPT the
+# detection stack and then crash on the first camera frame. ultralytics
+# pulls a compatible torch/torchvision itself; pinned to the version this
+# project is actually running (dependency audit, same reasoning as the
+# cryptography line above). On a CPU-only host you may prefer to install
+# the CPU torch wheel first:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+ultralytics==8.3.209
+
+# Outbound WhatsApp API calls (notifications/providers/whatsapp.py) — also
+# imported but previously undeclared.
+requests==2.34.2
+
+# Super Admin "New Lead" push notifications, web push via Firebase Cloud
+# Messaging (notifications/fcm.py). Reads its credential from the
+# FIREBASE_SERVICE_ACCOUNT_JSON env var only — never hardcoded, and the
+# app runs completely normally with push disabled if that var is unset.
+# Note: pulls in a newer protobuf than some unrelated ML packages
+# (mediapipe/paddlepaddle/tensorflow, if installed on the same machine)
+# expect — irrelevant to this project's own dependencies (verified
+# onnxruntime/opencv/insightface/ultralytics all still import fine), but
+# worth knowing if this is installed into a shared (non-venv) Python
+# environment that also runs those other tools.
+firebase-admin==7.5.0
+
 # Optional (Phase 2 multi-process rate limiting, auth/rate_limit_store.py):
 # only needed if REDIS_URL is set for a multi-worker/multi-instance
 # deployment. Uncomment to install:

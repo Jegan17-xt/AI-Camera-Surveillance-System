@@ -87,6 +87,61 @@ def init_notification_report_tables():
             ))
             conn.commit()
 
+        # Per-Detection-Type Alert Toggles — vehicle_alert_enabled/
+        # fire_smoke_alert_enabled/animal_alert_enabled/bird_alert_enabled
+        # added to notification_settings AFTER that table already existed
+        # live, same "create_all() never adds columns to an existing
+        # table" situation as every migration above. Backfilled from each
+        # row's OWN existing unknown_alert_enabled value (never a fixed
+        # literal) so a company's actual current behavior — these four
+        # types were, until this feature existed, gated by that same
+        # toggle as a stand-in master switch — is exactly preserved at
+        # the moment of migration; each company can then independently
+        # adjust every one going forward. New rows created after this
+        # point get the ORM's own default=0 (auth/models.py), same
+        # explicit-opt-in-required default every other alert toggle here
+        # already uses.
+        existing = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'notification_settings'"
+                )
+            )
+        }
+
+        if existing and "vehicle_alert_enabled" not in existing:
+            conn.execute(text("ALTER TABLE notification_settings ADD COLUMN vehicle_alert_enabled INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE notification_settings ADD COLUMN fire_smoke_alert_enabled INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE notification_settings ADD COLUMN animal_alert_enabled INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE notification_settings ADD COLUMN bird_alert_enabled INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(text(
+                "UPDATE notification_settings SET "
+                "vehicle_alert_enabled = unknown_alert_enabled, "
+                "fire_smoke_alert_enabled = unknown_alert_enabled, "
+                "animal_alert_enabled = unknown_alert_enabled, "
+                "bird_alert_enabled = unknown_alert_enabled"
+            ))
+            conn.commit()
+
+        # unknown_alert_min_confidence default correction (2026-09-07):
+        # the column already exists (no ADD COLUMN needed) so this isn't
+        # a schema migration, just a data fix — no UI field for this
+        # column has ever existed (see validate_unknown_alert_settings),
+        # so ANY row still sitting at the OLD literal default (0.0) is
+        # provably the untouched original, never a deliberate Admin
+        # choice; this WHERE clause naturally stops matching a row the
+        # instant it's corrected (or ever set to something else by an
+        # API caller), so it's safe to run unconditionally on every
+        # startup without a separate "already migrated" flag.
+        if existing:
+            conn.execute(text(
+                "UPDATE notification_settings SET unknown_alert_min_confidence = -1.0 "
+                "WHERE unknown_alert_min_confidence = 0.0"
+            ))
+            conn.commit()
+
 DEFAULT_UNKNOWN_ALERT_TEMPLATE = (
     "🚨 Unknown Person Detected\n\n"
     "An unknown person has been detected by the AI Camera Surveillance System.\n\n"
@@ -101,6 +156,10 @@ _BOOLEAN_KEYS = {
     "unknown_alert_enabled",
     "unknown_alert_send_image",
     "unknown_alert_dedup_enabled",
+    "vehicle_alert_enabled",
+    "fire_smoke_alert_enabled",
+    "animal_alert_enabled",
+    "bird_alert_enabled",
     "daily_report_enabled",
     "daily_report_include_pdf",
     "daily_report_include_attendance_summary",
@@ -121,6 +180,19 @@ UNKNOWN_ALERT_KEYS = (
     "unknown_alert_dedup_enabled",
 )
 
+# Per-Detection-Type Alert Toggles — fully independent of
+# UNKNOWN_ALERT_KEYS above (which is specific to Unknown Person Alert's
+# own recipient/template/confidence/cooldown/dedup, none of which apply
+# here). Each of these four is a standalone ON/OFF for its own
+# detection type's WhatsApp notification only — see notifications/
+# service.py's deliver_ai_detection_alert.
+DETECTION_ALERT_KEYS = (
+    "vehicle_alert_enabled",
+    "fire_smoke_alert_enabled",
+    "animal_alert_enabled",
+    "bird_alert_enabled",
+)
+
 DAILY_REPORT_KEYS = (
     "daily_report_enabled",
     "daily_report_time",
@@ -135,7 +207,7 @@ DAILY_REPORT_KEYS = (
     "daily_report_include_detection_stats",
 )
 
-_ALL_KEYS = UNKNOWN_ALERT_KEYS + DAILY_REPORT_KEYS
+_ALL_KEYS = UNKNOWN_ALERT_KEYS + DETECTION_ALERT_KEYS + DAILY_REPORT_KEYS
 
 ALLOWED_REPORT_FORMATS = ("pdf",)
 
@@ -157,6 +229,10 @@ def _row_to_dict(row):
         "unknown_alert_min_confidence": row.unknown_alert_min_confidence,
         "unknown_alert_cooldown_minutes": row.unknown_alert_cooldown_minutes,
         "unknown_alert_dedup_enabled": bool(row.unknown_alert_dedup_enabled),
+        "vehicle_alert_enabled": bool(row.vehicle_alert_enabled),
+        "fire_smoke_alert_enabled": bool(row.fire_smoke_alert_enabled),
+        "animal_alert_enabled": bool(row.animal_alert_enabled),
+        "bird_alert_enabled": bool(row.bird_alert_enabled),
         "daily_report_enabled": bool(row.daily_report_enabled),
         "daily_report_time": row.daily_report_time,
         "daily_report_recipient": row.daily_report_recipient,
@@ -210,14 +286,23 @@ def validate_unknown_alert_settings(values):
             return error
 
     if "unknown_alert_min_confidence" in values:
-        # Same 0-1 cosine-similarity scale as recognition_threshold/
-        # unknown_duplicate_threshold (api/ai_config.py) — this is
-        # compared directly against the `confidence` score
+        # Compared directly against the `confidence` score
         # face/unknown_manager.py's save_unknown() already receives from
-        # camera/frame_processor.py, never a 0-100 percentage.
+        # camera/frame_processor.py — a cosine SIMILARITY score against
+        # the closest REGISTERED face (the same score that classifies
+        # someone as "Unknown" to begin with: below recognition_threshold).
+        # That score's real range is -1..1, not 0..1 — unlike
+        # recognition_threshold/unknown_duplicate_threshold (api/ai_config.py),
+        # which compare embeddings against EACH OTHER and so stay
+        # practically non-negative, this one compares a genuine stranger
+        # against someone they don't resemble at all, which is routinely
+        # a small negative number. Root-cause fix (2026-09-07): the old
+        # 0..1 range made it impossible to ever configure a value that
+        # doesn't silently discard those completely legitimate negative-
+        # score alerts.
         error = validate_number_range(
             values["unknown_alert_min_confidence"], "Minimum Confidence Threshold",
-            min_value=0, max_value=1, integer=False,
+            min_value=-1, max_value=1, integer=False,
         )
         if error:
             return error
@@ -287,6 +372,14 @@ def update_unknown_alert_settings(customer_id, new_values):
     return _persist(customer_id, UNKNOWN_ALERT_KEYS, new_values), None
 
 
+def update_detection_alert_settings(customer_id, new_values):
+    """Vehicle/Fire-Smoke/Animal/Bird alert toggles — no dedicated
+    validation needed (every DETECTION_ALERT_KEYS field is a plain
+    boolean, coerced in _persist via _BOOLEAN_KEYS)."""
+
+    return _persist(customer_id, DETECTION_ALERT_KEYS, new_values), None
+
+
 def update_daily_report_settings(customer_id, new_values):
 
     error = validate_daily_report_settings(new_values)
@@ -295,6 +388,68 @@ def update_daily_report_settings(customer_id, new_values):
         return None, error
 
     return _persist(customer_id, DAILY_REPORT_KEYS, new_values), None
+
+
+# notification_type (as passed by every caller in notifications/service.py
+# and reports/daily_report.py) -> the NotificationSettings boolean column
+# that governs it. The one place this mapping lives — add a new
+# notification_type here, never inline elsewhere.
+_GATE_KEY_BY_NOTIFICATION_TYPE = {
+    "unknown_person_alert": "unknown_alert_enabled",
+    "fire_smoke_alert": "fire_smoke_alert_enabled",
+    "vehicle_alert": "vehicle_alert_enabled",
+    "animal_alert": "animal_alert_enabled",
+    "bird_alert": "bird_alert_enabled",
+    "daily_report": "daily_report_enabled",
+}
+
+
+def log_and_check_notifications_enabled(customer_id, notification_type):
+    """The ONE gate every outbound notification send in this app must
+    pass through, for every flow — Unknown Person, Fire/Smoke, Vehicle,
+    Animal/Bird, and Daily Reports. Call this immediately before actually
+    sending (never before recipient resolution/PDF generation/etc — only
+    before the real dispatch), and do not send/queue/trigger anything if
+    it returns False.
+
+    Root-cause fix (Company Admin Notification Settings audit,
+    2026-09-02): notifications/service.py's deliver_ai_detection_alert()
+    (Fire/Smoke/Vehicle/Animal/Bird) previously had NO enabled check at
+    all. First fixed by routing all four through the "WhatsApp Alerts"
+    toggle (unknown_alert_enabled) as a stand-in master switch; per-type
+    toggles (2026-09-02, same day) then replaced that stand-in with four
+    dedicated columns so each type is independently controllable — this
+    is the single place that maps every notification_type this app ever
+    sends to its own EXISTING DB column, no new settings field beyond
+    those four, no new table, no hardcoded True/False:
+
+      - "unknown_person_alert" -> NotificationSettings.unknown_alert_enabled
+        (the UI's "WhatsApp Alerts" toggle) — Unknown Person Alert only.
+      - "fire_smoke_alert" -> NotificationSettings.fire_smoke_alert_enabled
+      - "vehicle_alert" -> NotificationSettings.vehicle_alert_enabled
+      - "animal_alert" -> NotificationSettings.animal_alert_enabled
+      - "bird_alert" -> NotificationSettings.bird_alert_enabled
+      - "daily_report" -> NotificationSettings.daily_report_enabled (the
+        UI's "Daily Reports" toggle).
+
+    Company-specific by construction: get_notification_settings(customer_id)
+    reads/caches strictly per customer_id, so one company's OFF setting
+    can never read or affect another company's row or cache entry."""
+
+    settings = get_notification_settings(customer_id)
+    gate_key = _GATE_KEY_BY_NOTIFICATION_TYPE.get(notification_type, "unknown_alert_enabled")
+    enabled = bool(settings[gate_key])
+
+    print(f"[NOTIFICATION-SETTINGS] Company: {customer_id}")
+    print(f"[NOTIFICATION-SETTINGS] Enabled: {enabled}")
+    print(f"[NOTIFICATION-SETTINGS] Notification type: {notification_type}")
+
+    if not enabled:
+        print("[NOTIFICATION-SETTINGS] Skipped - notifications disabled")
+        return False
+
+    print(f"[NOTIFICATION-SETTINGS] Sending: {notification_type}")
+    return True
 
 
 def reset_notification_settings(customer_id):

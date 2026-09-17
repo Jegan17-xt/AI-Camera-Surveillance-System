@@ -109,15 +109,17 @@ MODULES = [
     ("reports", "Reports"),
     ("settings", "Settings"),
     ("site_management", "Sites / VPN Management"),
+    ("detection_events", "Detection Events"),
 ]
 
-# Dashboard and Subscription & Payment — a Company Admin's only way
-# back into the product and their only way to view+pay for module
-# access, so these two are never removable via the module-permission
-# system. Shared by api/permissions.py (Super Admin's grant editor)
-# and api/billing.py (self-lockout guard, checkout's free/always
-# included catalog items).
-ALWAYS_ACTIVE_MODULE_KEYS = {"dashboard", "subscription_payment"}
+# Dashboard, Settings and Subscription & Payment — always included for
+# every company, free, and never part of a purchasable package (see
+# api/module_packages.py ALWAYS_INCLUDED_MODULE_KEYS, which must stay in
+# sync with this set). Dashboard + Subscription & Payment are a Company
+# Admin's only way back into the product and their only way to pay for
+# packages; Settings is always-on per the Module Pricing spec. Shared by
+# api/permissions.py (Super Admin's grant editor) and api/billing.py.
+ALWAYS_ACTIVE_MODULE_KEYS = {"dashboard", "subscription_payment", "settings"}
 
 
 # Every module key added to MODULES after the original 8-module
@@ -130,6 +132,7 @@ _NEWLY_ADDED_COMPANY_ADMIN_MODULE_KEYS = (
     "unknown_person_analytics",
     "normal_camera",
     "site_management",
+    "detection_events",
 )
 
 

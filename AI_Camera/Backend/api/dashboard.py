@@ -192,6 +192,42 @@ def get_recent_activity(customer_id, limit=RECENT_ACTIVITY_LIMIT, owner_user_id=
                 "timestamp": timestamp,
             })
 
+    # Multi-Object & Fire Detection — vehicle/animal/bird/fire/smoke
+    # events merged into the same feed (person/unknown already have their
+    # entries above). Lazy import: keeps api/dashboard.py free of a
+    # module-load-time dependency on api/detection_events.py. Only the
+    # GENERIC category name is shown — never the specific COCO class
+    # (no "Dog Detected" / "Car Detected").
+    try:
+        from api.detection_events import get_recent_detection_events_for_activity
+
+        _EVENT_META = {
+            "CAR_DETECTED": ("vehicle-detected", "Vehicle Detected"),
+            "ANIMAL_DETECTED": ("animal-detected", "Animal Detected"),
+            "BIRD_DETECTED": ("bird-detected", "Bird Detected"),
+            "FIRE_DETECTED": ("fire-detected", "Fire Detected"),
+            "SMOKE_DETECTED": ("smoke-detected", "Smoke Detected"),
+        }
+
+        for row in get_recent_detection_events_for_activity(customer_id, owner_user_id=owner_user_id):
+            try:
+                timestamp = datetime.strptime(row["detected_time"], TIMESTAMP_FORMAT)
+            except (ValueError, TypeError):
+                continue
+
+            feed_type, feed_name = _EVENT_META.get(row["event_type"], ("detection-event", "Detection Event"))
+            events.append({
+                "type": feed_type,
+                "name": feed_name,
+                # No object_type here on purpose — the category (feed_name)
+                # is the only user-facing label. camera location if known,
+                # else blank.
+                "detail": row.get("location") or "",
+                "timestamp": timestamp,
+            })
+    except Exception:
+        pass  # a feed-merge hiccup must never blank the whole dashboard
+
     events.sort(key=lambda e: e["timestamp"], reverse=True)
 
     dismissed = _load_dismissed_activity(customer_id, owner_user_id)
@@ -276,6 +312,16 @@ def get_dashboard_data(customer_id, owner_user_id=None):
     # rather than a division-by-zero error or a misleading 100%.
     attendance_rate = round((present / registered) * 100) if registered > 0 else 0
 
+    # Multi-Object & Fire Detection — today's per-type counts for the new
+    # dashboard cards. Isolated so a stats failure never blanks the rest
+    # of the dashboard.
+    detection_stats = {}
+    try:
+        from api.detection_events import get_detection_event_stats
+        detection_stats = get_detection_event_stats(customer_id, owner_user_id=owner_user_id)
+    except Exception:
+        detection_stats = {}
+
     return {
         "registered": registered,
         "present": present,
@@ -284,6 +330,10 @@ def get_dashboard_data(customer_id, owner_user_id=None):
         "cameras_online": camera_counts["online"],
         "cameras_total": camera_counts["total"],
         "attendance_rate": attendance_rate,
+        "vehicles_today": detection_stats.get("vehicles", 0),
+        "animals_today": detection_stats.get("animals", 0),
+        "birds_today": detection_stats.get("birds", 0),
+        "fire_events_today": detection_stats.get("fire", 0),
         "recent_activity": get_recent_activity(customer_id, owner_user_id=owner_user_id),
     }
 

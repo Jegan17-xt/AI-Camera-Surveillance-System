@@ -81,6 +81,7 @@ GRANTABLE_USER_MODULE_KEYS = {
     "attendance",
     "reports",
     "settings",
+    "detection_events",
 }
 
 # Legacy Registered Persons "view only" tier — predates this module's
@@ -272,10 +273,17 @@ def get_company_user_permissions(parent_admin_id, user_id):
 
     granted = set(get_user_module_keys(user_id))
 
+    # A Company Admin can only grant a User a page their company actually
+    # owns — clamp the checkbox list to the modules unlocked by the
+    # company's purchased packages (plus the always-included set).
+    from api.module_packages import company_module_keys, ALWAYS_INCLUDED_MODULE_KEYS
+
+    owned = set(company_module_keys(parent_admin_id)) | set(ALWAYS_INCLUDED_MODULE_KEYS)
+
     permissions = [
         {"module_key": key, "module_label": label, "granted": key in granted}
         for key, label in MODULES
-        if key in GRANTABLE_USER_MODULE_KEYS
+        if key in GRANTABLE_USER_MODULE_KEYS and key in owned
     ]
 
     return {
@@ -295,6 +303,14 @@ def update_company_user_permissions(parent_admin_id, user_id, module_keys):
         return None, "Module permissions must be provided as a list."
 
     clean_keys = {key for key in (module_keys or []) if key in GRANTABLE_USER_MODULE_KEYS}
+
+    # Never grant a page the company itself doesn't own (see
+    # get_company_user_permissions) — a tampered payload can't hand a
+    # User a module the Company Admin hasn't paid for.
+    from api.module_packages import company_module_keys, ALWAYS_INCLUDED_MODULE_KEYS
+
+    owned = set(company_module_keys(parent_admin_id)) | set(ALWAYS_INCLUDED_MODULE_KEYS)
+    clean_keys &= owned
 
     # This modal only ever shows/edits GRANTABLE_USER_MODULE_KEYS, so a
     # plain save must never silently revoke a legacy key it never

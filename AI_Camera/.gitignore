@@ -59,6 +59,20 @@ dataset/unknown_embeddings/
 logs/
 
 # =========================
+# Android / TWA (Frontend/Ai_FE/mobile-twa/*)
+# =========================
+mobile-twa/*/local.properties
+mobile-twa/*/.gradle/
+mobile-twa/*/build/
+mobile-twa/*/app/build/
+mobile-twa/*/captures/
+mobile-twa/*/.cxx/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# =========================
 # IDE
 # =========================
 .vscode/

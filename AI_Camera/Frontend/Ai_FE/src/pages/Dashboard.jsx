@@ -96,6 +96,38 @@ export default function Dashboard() {
             icon: "Percent",
             tone: "green",
           },
+          {
+            id: 6,
+            label: "Vehicles Today",
+            value: data.vehicles_today ?? 0,
+            delta: "Detected today",
+            icon: "Car",
+            tone: "cyan",
+          },
+          {
+            id: 7,
+            label: "Animals Today",
+            value: data.animals_today ?? 0,
+            delta: "Detected today",
+            icon: "PawPrint",
+            tone: "amber",
+          },
+          {
+            id: 8,
+            label: "Birds Today",
+            value: data.birds_today ?? 0,
+            delta: "Detected today",
+            icon: "Bird",
+            tone: "cyan",
+          },
+          {
+            id: 9,
+            label: "Fire / Smoke Today",
+            value: data.fire_events_today ?? 0,
+            delta: (data.fire_events_today ?? 0) > 0 ? "Review Detection Events" : "No fire alerts today",
+            icon: "Flame",
+            tone: "red",
+          },
         ]);
 
         // Real events only, merged + de-duplicated server-side from
@@ -123,6 +155,7 @@ export default function Dashboard() {
     [
       DATA_EVENTS.REGISTERED_PERSONS_CHANGED,
       DATA_EVENTS.UNKNOWN_PERSONS_CHANGED,
+      DATA_EVENTS.DETECTION_EVENTS_CHANGED,
       DATA_EVENTS.ATTENDANCE_CHANGED,
       DATA_EVENTS.CAMERAS_CHANGED,
     ],

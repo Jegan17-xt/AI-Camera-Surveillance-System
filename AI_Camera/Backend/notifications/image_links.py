@@ -114,3 +114,37 @@ def verify_public_document_link(customer_id, filename, expires_at, sig):
     the call site."""
 
     return verify_public_image_link(customer_id, filename, expires_at, sig)
+
+
+def build_public_event_image_url(customer_id, relpath):
+    """Same signed-link mechanism as build_public_image_url above, for
+    an AI Detection Alert (fire/smoke/vehicle/animal/bird) snapshot
+    instead of an unknown-face image. Different from both
+    build_public_image_url and build_public_document_url in one way:
+    `relpath` here is events/manager.py's DetectionEvent.image_path
+    shape — a SUBFOLDER-relative path ("<DD-MM-YYYY>/<type>_<HH-MM-SS>.
+    jpg"), not a bare filename — served from
+    api.detection_events.detection_events_folder(customer_id) instead of
+    unknown_folder(customer_id). The signing scheme itself isn't
+    filename-shaped either way (see _sign), so this needs no changes
+    there. None in, None out — see build_public_image_url's docstring
+    for why callers never need their own not-configured branch for
+    this."""
+
+    if not customer_id or not relpath:
+        return None
+
+    base = (os.environ.get("PUBLIC_BASE_URL") or "http://localhost:5000").rstrip("/")
+    expires_at = int(time.time()) + _LINK_TTL_SECONDS
+    sig = _sign(customer_id, relpath, expires_at)
+
+    return f"{base}/public/event-image/{customer_id}/{expires_at}/{sig}/{relpath}"
+
+
+def verify_public_event_image_link(customer_id, relpath, expires_at, sig):
+    """Identical check to verify_public_image_link — the signature
+    scheme isn't file-type-specific; this is its own named function only
+    so the /public/event-image route's intent stays self-explanatory at
+    the call site."""
+
+    return verify_public_image_link(customer_id, relpath, expires_at, sig)

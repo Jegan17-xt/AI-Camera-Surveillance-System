@@ -42,6 +42,19 @@ axios.interceptors.request.use((config) => {
 // set here, so ordering between the two never matters.
 document.title = `${APP_NAME} — Surveillance Dashboard`;
 
+// PWA service worker (public/sw.js) — production builds only. Dev
+// (`vite`) deliberately never registers it: a cached dev bundle would
+// fight Vite's own HMR/no-store headers and make code changes look like
+// they aren't taking effect. Registered after `load` so it never
+// competes with the initial page's own network requests.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.error("Service worker registration failed:", err);
+    });
+  });
+}
+
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <BrowserRouter>

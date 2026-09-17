@@ -36,3 +36,11 @@ Thumbs.db
 # --- Backup archives / stray scratch files (not source) ---
 *.zip
 AI_Camera/Backend/Users*scratchpad*.png
+
+# Firebase secrets
+**/firebase_env_line.txt
+**/*service-account*.json
+
+# Android / Gradle
+.gradle/
+**/.gradle/

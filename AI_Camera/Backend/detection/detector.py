@@ -31,6 +31,37 @@ except RuntimeError:
 
 from ultralytics import YOLO
 
+# --- Multi-Object Detection: COCO classes this project cares about ---
+# yolov8n.pt is a plain COCO model — person(0) was the only class ever
+# requested before (classes=[0] below); vehicles and common animals are
+# ALL already in the same model, so detecting them is just a wider
+# `classes=` list on the SAME single model.track() call — no second
+# model, near-zero extra cost. Fire/smoke is NOT in COCO and uses a
+# separate optional model (detection/fire_detector.py).
+PERSON_CLASS_ID = 0
+# bicycle, car, motorcycle, bus, truck
+VEHICLE_CLASS_IDS = (1, 2, 3, 5, 7)
+# bird, cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe —
+# the last four aren't in the literal spec but cost nothing to include
+# and make "add more animal classes later" a one-line change. Kept in
+# this tuple so the YOLO `classes=` filter still requests bird frames;
+# camera/frame_processor.py splits bird (BIRD_CLASS_ID) out into its own
+# BIRD category before the rest are labelled ANIMAL.
+ANIMAL_CLASS_IDS = (14, 15, 16, 17, 18, 19, 20, 21, 22, 23)
+# Bird is its own user-facing category (see the spec) — still a member of
+# ANIMAL_CLASS_IDS above for the detection request, special-cased in the
+# pipeline loop.
+BIRD_CLASS_ID = 14
+
+# id -> display name, for the labels the pipeline draws ("Car 92%",
+# "Dog 91%") and the object_type stored on each DetectionEvent.
+COCO_CLASS_NAMES = {
+    0: "person",
+    1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck",
+    14: "bird", 15: "cat", 16: "dog", 17: "horse", 18: "sheep", 19: "cow",
+    20: "elephant", 21: "bear", 22: "zebra", 23: "giraffe",
+}
+
 # --- Startup Fix: lazy model load ---
 # Same reasoning as face/face_detector.py's get_app(): this used to
 # construct YOLO("yolov8n.pt") at import time, which blocked Flask's
@@ -87,9 +118,21 @@ def _record_pretrack_detections(tracking_key):
     def _callback(predictor):
         try:
             boxes = predictor.results[0].boxes
-            confs = [float(c) for c in boxes.conf.tolist()] if len(boxes) else []
+            # PERSON-ONLY here, deliberately: this diagnostic exists to
+            # answer "did YOLO see a person that ByteTrack then dropped"
+            # (see get_pretrack_info's callers in camera/frame_processor.
+            # py). Now that detect() can also request vehicle/animal
+            # classes, counting every box would make person_candidates
+            # meaningless — filter to class 0 so it keeps measuring what
+            # it was built to measure.
+            if len(boxes):
+                cls_list = boxes.cls.tolist()
+                conf_list = boxes.conf.tolist()
+                confs = [float(c) for c, k in zip(conf_list, cls_list) if int(k) == PERSON_CLASS_ID]
+            else:
+                confs = []
             with _pretrack_lock:
-                _pretrack_info[tracking_key] = {"count": len(boxes), "confs": confs}
+                _pretrack_info[tracking_key] = {"count": len(confs), "confs": confs}
         except Exception:
             pass  # diagnostic only — must never affect real detection
 
@@ -155,7 +198,7 @@ def warmup(tracking_key):
     detect(dummy_frame, tracking_key)
 
 
-def detect(frame, tracking_key):
+def detect(frame, tracking_key, classes=None):
     # persist=True: keep THIS camera's own tracker state (track IDs,
     # motion prediction, lost-track buffer) alive between calls instead
     # of resetting it every frame — required for continuous track IDs.
@@ -163,11 +206,24 @@ def detect(frame, tracking_key):
     # unmodified/default. conf is passed explicitly so it keeps using
     # this project's existing 0.35 threshold — model.track() otherwise
     # falls back to its own default of 0.1 for tracking mode.
+    #
+    # `classes` (Multi-Object Detection): defaults to [PERSON_CLASS_ID],
+    # i.e. byte-for-byte the previous person-only behavior — the
+    # standalone camera/camera.py script and anything else calling
+    # detect() without this arg is completely unaffected. The Flask
+    # pipeline (camera/frame_processor.py) passes the union of enabled
+    # class sets (person + vehicles and/or animals) based on the
+    # customer's AI config. Still exactly ONE model.track() call per
+    # cycle regardless of how many classes are requested — ByteTrack
+    # tracks them all in the same pass; box.cls disambiguates downstream.
+    if classes is None:
+        classes = [PERSON_CLASS_ID]
+
     results = _get_model(tracking_key).track(
         frame,
         persist=True,
         tracker="bytetrack.yaml",
-        classes=[0],      # Person only
+        classes=list(classes),
         conf=0.35,        # Confidence threshold
         verbose=False     # Remove terminal logs
     )

@@ -10,15 +10,16 @@ never propagate back into the AI detection pipeline. See
 handle_unknown_person_confirmed's try/except for the actual guarantee.
 """
 
+import os
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
 from db import get_session
 from auth.database import get_user_by_id
-from auth.models import NotificationLog, to_dict
+from auth.models import Camera, NotificationLog, to_dict
 from error_logging import log_exception
-from api.notification_settings import get_notification_settings
+from api.notification_settings import get_notification_settings, log_and_check_notifications_enabled
 from api.user_notification_settings import get_user_notification_settings
 from notifications.providers.whatsapp import WhatsAppProvider
 from notifications.utils import mask_recipient
@@ -134,7 +135,20 @@ def _resolve_unknown_alert_target(company_settings, owner_user_id, customer_id):
     company recipient". `skip_reason` is only set when the assigned
     User opted in but has no number anywhere (neither an explicit
     override nor a registered phone number) — worth logging as a
-    misconfiguration rather than silently falling back."""
+    misconfiguration rather than silently falling back.
+
+    Root-cause fix (2026-09-07): a camera WITH an assigned owner used to
+    fall through to the company-level fallback recipient the moment that
+    owner's own unknown_alert_enabled was OFF — so turning the toggle
+    off didn't actually stop alerts about that camera, it just silently
+    re-routed them to the company default number instead (invisible when
+    that default happens to resolve to the same phone, e.g. the Company
+    Admin's own registered number, which is exactly what made this look
+    like the toggle had no effect at all). A camera's assigned owner is
+    now authoritative for that camera: OFF means no Unknown Person Alert
+    goes out for it, full stop — never silently redirected to anyone
+    else. The company-level fallback below is reached ONLY for cameras
+    with no assigned owner at all."""
 
     if owner_user_id is not None:
         user_settings = get_user_notification_settings(owner_user_id)
@@ -154,6 +168,9 @@ def _resolve_unknown_alert_target(company_settings, owner_user_id, customer_id):
                 "recipient": None, "send_image": None, "related_user_id": owner_user_id,
                 "skip_reason": "No WhatsApp number configured for this user.",
             }
+
+        print(f"[UNKNOWN-ALERT-ROUTING] Camera owner {owner_user_id} has Unknown Person Alerts OFF — suppressing (no fallback to company recipient).")
+        return {"recipient": None, "send_image": None, "related_user_id": owner_user_id, "skip_reason": None}
 
     recipient = company_settings["unknown_alert_recipient"] or registered_whatsapp_number(customer_id)
 
@@ -193,8 +210,11 @@ def handle_unknown_person_confirmed(event):
 
         # Company-level toggle is the master kill switch: OFF means
         # nothing goes to anyone in this company, regardless of what any
-        # individual User has configured for themselves.
-        if not settings["unknown_alert_enabled"]:
+        # individual User has configured for themselves. Centralized in
+        # api/notification_settings.py's log_and_check_notifications_enabled
+        # so every notification flow (this one, AI detection alerts, Daily
+        # Reports) is gated — and logged — identically.
+        if not log_and_check_notifications_enabled(customer_id, "unknown_person_alert"):
             return
 
         unknown_person_id = event.get("unknown_person_id")
@@ -215,6 +235,11 @@ def handle_unknown_person_confirmed(event):
         min_confidence = settings["unknown_alert_min_confidence"]
 
         if confidence is not None and min_confidence is not None and confidence < min_confidence:
+            print(
+                f"[UNKNOWN-WA] Blocked by confidence threshold — "
+                f"confidence={confidence:.4f} < unknown_alert_min_confidence={min_confidence:.4f} "
+                f"(unknown_person_id={unknown_person_id}, customer_id={customer_id})"
+            )
             return
 
         # Cooldown/dedup stays keyed by (customer_id, unknown_person_id)
@@ -237,6 +262,15 @@ def handle_unknown_person_confirmed(event):
 
         image_path = event.get("captured_image_path") if target["send_image"] else None
 
+        print(f"[UNKNOWN-WA] Snapshot file: {image_path}")
+        if image_path:
+            snapshot_exists = os.path.exists(image_path)
+            print(f"[UNKNOWN-WA] Snapshot exists: {snapshot_exists}")
+            print(f"[UNKNOWN-WA] Snapshot size: {os.path.getsize(image_path) if snapshot_exists else 'N/A'}")
+        else:
+            print("[UNKNOWN-WA] Snapshot exists: N/A (send_image disabled for this recipient, or no path on the event)")
+            print("[UNKNOWN-WA] Snapshot size: N/A")
+
         provider = _provider()
         result = provider.send_template(
             recipient=target["recipient"],
@@ -245,6 +279,8 @@ def handle_unknown_person_confirmed(event):
             image_path=image_path,
             customer_id=customer_id,
         )
+
+        print(f"[UNKNOWN-WA] Final status: {'Sent' if result.get('success') else 'Failed'} (status={result.get('status')}, message={result.get('message')})")
 
         status = "Sent" if result.get("success") else "Failed"
         error_message = None if result.get("success") else result.get("message")
@@ -336,18 +372,28 @@ def deliver_daily_unknown_count(recipient, count, date_str):
         return {"success": False, "provider": "whatsapp", "message": str(e)}
 
 
-def deliver_daily_report(recipient, pdf_path, summary, customer_id=None, include_pdf=True, document_filename=None):
+def deliver_daily_report(
+    recipient, pdf_path, summary, customer_id=None, include_pdf=True, document_filename=None,
+    image_path=None, image_kind=None,
+):
     """Generic WhatsApp delivery for the Daily Report — one
-    send_template call carrying both the 6-parameter text BODY (summary)
-    and (when include_pdf) the generated PDF as the template's document
-    HEADER (DocumentUrl + DocumentFilename), the same "attach via a
-    signed public URL on the same request" idiom Unknown Person Alerts
-    already use for their captured image (see notifications/providers/
-    whatsapp.py's module docstring) — never a second, separate media
-    message sent after the template. No DB writes here: reports/
-    daily_report.py owns ReportLog and interprets this return value
-    itself, keeping report generation and WhatsApp delivery decoupled
-    (per this feature's architecture).
+    send_template call carrying the 6-parameter text BODY (summary),
+    (when include_pdf) the generated PDF as the template's document
+    HEADER (DocumentUrl + DocumentFilename), and (when `image_path` is
+    given) that day's most recent detection snapshot as ImageUrl — the
+    same "attach via a signed public URL on the same request" idiom
+    Unknown Person Alerts already use for their own captured image (see
+    notifications/providers/whatsapp.py's module docstring). Both can be
+    present on the same request: whichever header type the actually-
+    approved daily_report_summary template needs (image or document) is
+    the one that renders; the other is simply unused by the vendor, not
+    a second, separate media message. `image_path`/`image_kind` are
+    resolved by reports/daily_report.py's _latest_detection_snapshot —
+    this function only forwards them.
+
+    No DB writes here: reports/daily_report.py owns ReportLog and
+    interprets this return value itself, keeping report generation and
+    WhatsApp delivery decoupled (per this feature's architecture).
 
     Never raises — returns {"success": False, ...} on any internal
     error instead."""
@@ -359,6 +405,8 @@ def deliver_daily_report(recipient, pdf_path, summary, customer_id=None, include
 
         result = provider.send_template(
             recipient, "daily_report_summary", summary,
+            image_path=image_path,
+            image_kind=image_kind,
             document_path=pdf_path if include_pdf else None,
             document_filename=document_filename if include_pdf else None,
             customer_id=customer_id,
@@ -379,3 +427,153 @@ def deliver_daily_report(recipient, pdf_path, summary, customer_id=None, include
     except Exception as e:
         log_exception(e, "NotificationService.deliver_daily_report")
         return {"success": False, "provider": "whatsapp", "message": str(e)}
+
+
+def _resolve_ai_detection_alert_recipient(customer_id, camera_id=None):
+    """AI Detection Alert (fire/smoke/vehicle/animal/bird — see
+    events/manager.py's record_detection) reuses the SAME company-level
+    fallback number Unknown Person Alerts resolve to (NotificationSettings'
+    own unknown_alert_recipient if configured, else the Company Admin's
+    own registered phone number) — no separate recipient/toggle pair of
+    its own, deliberately, to avoid duplicating settings Unknown Person
+    Alerts already own.
+
+    Root-cause fix (2026-09-07): this used to send to the company
+    fallback UNCONDITIONALLY, with no awareness of the capturing camera's
+    assigned owner at all — so a camera owner who explicitly turned OFF
+    their own "Notifications" toggle (Admin -> User Management -> that
+    User -> WhatsApp & Reports) kept receiving Fire/Vehicle/Animal/Bird
+    alerts anyway, since this function never even looked at who the
+    camera belonged to. Unknown Person Alert already respects that same
+    per-owner OFF (_resolve_unknown_alert_target above) — this now does
+    too, for consistency: a camera WITH an assigned owner whose own
+    unknown_alert_enabled is OFF gets no AI Detection Alert either,
+    period, no fallback to the company recipient. A camera with no
+    assigned owner (or whose owner has it ON) is completely unaffected —
+    still routes to the company-level number exactly as before."""
+
+    if camera_id is not None:
+        with get_session() as session:
+            camera = session.get(Camera, camera_id)
+            owner_user_id = camera.owner_user_id if camera else None
+
+        if owner_user_id is not None:
+            user_settings = get_user_notification_settings(owner_user_id)
+
+            if not user_settings["unknown_alert_enabled"]:
+                print(f"[AI-DETECTION-ALERT-ROUTING] Camera owner {owner_user_id} has Notifications OFF — suppressing (no fallback to company recipient).")
+                return None
+
+    settings = get_notification_settings(customer_id)
+    return settings["unknown_alert_recipient"] or registered_whatsapp_number(customer_id)
+
+
+def deliver_ai_detection_alert(customer_id, detection_type, camera_id, location, image_path):
+    """Fire/Smoke/Vehicle/Animal/Bird detections -> WhatsApp, tagged
+    internally as the "ai_detection_alert" kind (NotificationLog.type,
+    and the cooldown-key namespace in notifications/providers/whatsapp.py)
+    plus the actual captured snapshot (never the template's own sample
+    image) as the header image.
+
+    TEMPORARILY (until a dedicated ai_detection_alert template is
+    approved), the vendor Template actually sent is the SAME approved
+    one Unknown Person Alert uses — whatsapp.py's send_template maps
+    this "kind" to that template/param shape internally, so the
+    variables built here match ITS 3-slot ("camera", "date", "time")
+    shape, not a 4-slot Detection Type/Date/Time/Location one: detection
+    type and location are combined into the one text slot the approved
+    template has ({{1}}), e.g. "Fire — Warehouse A".
+
+    Called from events/manager.py's record_detection, on its own
+    background thread — this function does no threading of its own.
+    Never raises: every exit path (disabled, no recipient configured, or
+    a real send attempt) is either a silent no-op or a logged
+    NotificationLog row, same guarantee handle_unknown_person_confirmed
+    gives above.
+
+    Root-cause fix (Company Admin Notification Settings audit,
+    2026-09-02): this function used to have NO enabled/disabled check at
+    all. First fixed by gating on the Admin's "WhatsApp Alerts" toggle
+    (NotificationSettings.unknown_alert_enabled) as a stand-in master
+    switch; per-type toggles (same day, follow-up request) then gave each
+    detection type its own independent, dedicated switch —
+    vehicle_alert_enabled / fire_smoke_alert_enabled / animal_alert_enabled
+    / bird_alert_enabled — so e.g. turning Vehicle alerts off no longer
+    has any effect on Fire/Animal/Bird alerts or vice versa. Detection
+    itself (YOLO finding the object, events/manager.py saving the
+    DetectionEvent row + snapshot, it showing up in the dashboard) is
+    entirely unaffected either way — this function is only ever called
+    AFTER that row is already saved (see events/manager.py's
+    record_detection), so disabling a notification here never disables
+    detection/saving. Gated by the same shared, logged check every other
+    flow uses — see
+    api/notification_settings.log_and_check_notifications_enabled."""
+
+    try:
+        print(f"[NOTIFICATION-TRACE] Detection type: {detection_type}")
+        print(f"[NOTIFICATION-TRACE] Company ID: {customer_id}")
+
+        notification_type = (
+            "fire_smoke_alert" if detection_type in ("Fire", "Smoke")
+            else "vehicle_alert" if detection_type == "Vehicle"
+            else "bird_alert" if detection_type == "Bird"
+            else "animal_alert"
+        )
+
+        # notification_type + "_enabled" is exactly the NotificationSettings
+        # column name for all four of these (fire_smoke_alert ->
+        # fire_smoke_alert_enabled, etc — see api/notification_settings.py's
+        # _GATE_KEY_BY_NOTIFICATION_TYPE, the single source of truth this
+        # mirrors rather than duplicates). get_notification_settings is a
+        # 3-second TTL cache, so this costs nothing extra beyond the gate
+        # check that already happens right after.
+        current_setting = bool(get_notification_settings(customer_id).get(f"{notification_type}_enabled"))
+        print(f"[NOTIFICATION-TRACE] Notification setting: {current_setting}")
+
+        allowed = log_and_check_notifications_enabled(customer_id, notification_type)
+        print(f"[NOTIFICATION-TRACE] Notification allowed: {allowed}")
+
+        if not allowed:
+            print("[NOTIFICATION-TRACE] Final status: Skipped — notification type disabled in Admin Settings")
+            return
+
+        recipient = _resolve_ai_detection_alert_recipient(customer_id, camera_id)
+
+        if not recipient:
+            print("[NOTIFICATION-TRACE] WhatsApp recipient: None")
+            print("[NOTIFICATION-TRACE] Final status: Skipped — no recipient configured")
+            return
+
+        print("[NOTIFICATION-TRACE] WhatsApp trigger: deliver_ai_detection_alert -> WhatsAppProvider.send_template")
+        print(f"[NOTIFICATION-TRACE] WhatsApp recipient: {mask_recipient(recipient)}")
+
+        now = datetime.now()
+        template_vars = {
+            "camera": f"{detection_type} — {location or 'Unassigned Camera'}",
+            "date": now.strftime("%d-%m-%Y"),
+            "time": now.strftime("%H:%M:%S"),
+        }
+
+        provider = _provider()
+        result = provider.send_template(
+            recipient=recipient,
+            template_name="ai_detection_alert",
+            variables=template_vars,
+            image_path=image_path,
+            image_kind="detection_event",
+            customer_id=customer_id,
+        )
+
+        status = "Sent" if result.get("success") else "Failed"
+        error_message = None if result.get("success") else result.get("message")
+
+        print(f"[NOTIFICATION-TRACE] Final status: {status} (status={result.get('status')}, message={error_message})")
+
+        _log_notification(
+            customer_id, "ai_detection_alert", recipient, "ai_detection_alert",
+            None, camera_id, status, provider.name, error_message,
+        )
+
+    except Exception as e:
+        print(f"[NOTIFICATION-TRACE] Final status: Exception — {type(e).__name__}: {e}")
+        log_exception(e, "NotificationService.deliver_ai_detection_alert")

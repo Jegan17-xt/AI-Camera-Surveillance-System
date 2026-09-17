@@ -40,7 +40,7 @@ from api.subscriptions import list_payments, get_subscription
 
 VALID_BILLING_CYCLES = ("Monthly", "Yearly")
 VALID_UNIT_TYPES = ("flat", "per_camera", "per_gb")
-VALID_ACTIVATION_TYPES = ("module", "setting_flag", "record_only")
+VALID_ACTIVATION_TYPES = ("module", "setting_flag", "record_only", "package")
 
 CATEGORY_AI_MODULES = "AI / Camera Modules"
 CATEGORY_HARDWARE = "Camera / Hardware"
@@ -176,11 +176,11 @@ def init_billing_tables():
                 )
             )
 
-        for key, label in MODULES:
-            _seed(
-                f"module:{key}", CATEGORY_AI_MODULES, label,
-                f"Access to the {label} module.", "flat", "module", key,
-            )
+        # Per-module billing was replaced by the 4-package model — see
+        # api/module_packages.py (init_module_packages_tables seeds the
+        # "package:*" BillableItem rows and removes any leftover
+        # "module:*" rows from this old catalog). Nothing seeds
+        # activation_type="module" items here any more.
 
         _seed(
             "whatsapp_unknown_alerts", CATEGORY_NOTIFICATIONS, "WhatsApp Unknown Person Alerts",
@@ -279,7 +279,9 @@ def list_billable_items(customer_id=None):
 
     with get_session() as session:
         rows = session.scalars(
-            select(BillableItem).order_by(BillableItem.category, BillableItem.display_order, BillableItem.name)
+            select(BillableItem)
+            .where(BillableItem.activation_type != "package")
+            .order_by(BillableItem.category, BillableItem.display_order, BillableItem.name)
         ).all()
 
         overrides = {}
@@ -621,7 +623,7 @@ def get_checkout_context(customer_id):
     with get_session() as session:
         items = session.scalars(
             select(BillableItem)
-            .where(BillableItem.enabled == 1)
+            .where(BillableItem.enabled == 1, BillableItem.activation_type != "package")
             .order_by(BillableItem.category, BillableItem.display_order, BillableItem.name)
         ).all()
 
@@ -759,15 +761,18 @@ def checkout(customer_id, item_keys, billing_cycle):
             subscription = Subscription(customer_id=customer_id)
             session.add(subscription)
 
-        subscription.plan_name = "Custom"
         subscription.status = "Active"
-        subscription.amount = total
         subscription.billing_cycle = billing_cycle
         subscription.next_due_date = next_due_date
         subscription.updated_at = _now()
 
-        # --- SubscriptionItem: replace this customer's selection ---
-        session.query(SubscriptionItem).filter(SubscriptionItem.customer_id == customer_id).delete()
+        # --- SubscriptionItem: replace this customer's add-on selection,
+        # leaving any "package:*" rows (owned via api/module_packages.py)
+        # untouched. ---
+        session.query(SubscriptionItem).filter(
+            SubscriptionItem.customer_id == customer_id,
+            ~SubscriptionItem.item_key.like("package:%"),
+        ).delete(synchronize_session=False)
 
         for li in line_items:
             session.add(
@@ -780,6 +785,20 @@ def checkout(customer_id, item_keys, billing_cycle):
                     billing_cycle=billing_cycle,
                 )
             )
+
+        session.flush()
+
+        # amount reflects every current line — packages + these add-ons.
+        subscription.amount = float(
+            session.scalar(
+                select(func.coalesce(func.sum(SubscriptionItem.price), 0.0)).where(
+                    SubscriptionItem.customer_id == customer_id
+                )
+            )
+            or 0.0
+        )
+        if not subscription.plan_name or subscription.plan_name == "Free":
+            subscription.plan_name = "Custom"
 
         # --- Payment + line items ---
         payment = Payment(

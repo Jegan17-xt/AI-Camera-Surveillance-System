@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { useAuth } from "./AuthContext";
+import { hasModule } from "../lib/permissions";
 import { DATA_EVENTS, useDataEvent } from "../lib/dataEvents";
 import { API_BASE_URL } from "../lib/apiBase";
 
@@ -24,14 +25,17 @@ const COMPANY_USERS_URL = `${API_BASE_URL}/company/users`;
 export function SelectedUserProvider({ children }) {
   const { user } = useAuth();
   const isCompanyAdmin = user?.role === "Company Admin";
-  // A User granted "user_management" can also reach /company/users (see
-  // Backend/api/company_users.py + routes.py's company_or_user_required),
-  // so this same list can populate the owner-assignment dropdowns on
-  // pages like Camera Management/Normal Camera for them too. Doesn't
-  // affect `isCompanyAdmin` itself, which consumers (e.g. the "view as"
-  // selector) still use to decide whether to show that Company-Admin-only
-  // aggregate filter — a User never gets that UI, only this list.
-  const isUser = user?.role === "User";
+  // Who may actually call GET /company/users: a Company Admin always, or
+  // a User who holds the "user_management" module — that endpoint is
+  // module_required("user_management") server-side (see
+  // Backend/api/routes.py). A plain User with no such grant must NEVER
+  // trigger this request: it 403s, and AuthContext's response
+  // interceptor turns any authenticated 403 into a full redirect to
+  // /user/403 — which is exactly the "instant 403 right after login"
+  // bug. A User's own pages don't need this list anyway (the camera
+  // owner-assignment dropdown is Company-Admin-only, and UserManagement
+  // fetches its own list).
+  const canListCompanyUsers = isCompanyAdmin || hasModule(user, "user_management");
 
   const [selectedUserId, setSelectedUserIdState] = useState(() => {
     const stored = sessionStorage.getItem(STORAGE_KEY);
@@ -44,13 +48,17 @@ export function SelectedUserProvider({ children }) {
   const [usersLoading, setUsersLoading] = useState(false);
 
   const fetchUsers = () => {
-    if (!isCompanyAdmin && !isUser) {
+    if (!canListCompanyUsers) {
       setUsers([]);
       return;
     }
     setUsersLoading(true);
     axios
-      .get(COMPANY_USERS_URL)
+      // suppressAuthRedirect: a 403 here (e.g. the module grant was
+      // revoked between renders) must never bounce the user off a page
+      // they're otherwise entitled to — same opt-out Attendance.jsx uses
+      // for its supplementary fetch.
+      .get(COMPANY_USERS_URL, { suppressAuthRedirect: true })
       .then((res) => setUsers(res.data.users || []))
       .catch((err) => {
         console.error("Company Users API Error :", err);
@@ -59,15 +67,16 @@ export function SelectedUserProvider({ children }) {
       .finally(() => setUsersLoading(false));
   };
 
-  useEffect(fetchUsers, [isCompanyAdmin, isUser]);
+  useEffect(fetchUsers, [canListCompanyUsers]);
 
   // A User (or role we don't have a selector for) just got created,
   // edited, disabled, or deleted elsewhere (UserManagement.jsx) — refresh
   // the list, and if the currently-selected User no longer exists, fall
   // back to "All Users" rather than silently filtering on a stale id.
   useDataEvent(DATA_EVENTS.COMPANY_USERS_CHANGED, () => {
+    if (!canListCompanyUsers) return;
     axios
-      .get(COMPANY_USERS_URL)
+      .get(COMPANY_USERS_URL, { suppressAuthRedirect: true })
       .then((res) => {
         const fresh = res.data.users || [];
         setUsers(fresh);

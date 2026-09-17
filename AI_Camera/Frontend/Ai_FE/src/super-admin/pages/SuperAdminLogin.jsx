@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate, Link } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { KeySquare, Mail, Lock, Eye, EyeOff, Loader2, AlertTriangle } from "lucide-react";
 import AdminCard from "../ui/AdminCard";
 import AdminButton from "../ui/AdminButton";
@@ -35,7 +35,7 @@ export default function SuperAdminLogin() {
       return <Navigate to="/super-admin/dashboard" replace />;
     }
 
-    return <Navigate to={isCompanyAdmin(user) ? "/admin/dashboard" : "/user/dashboard"} replace />;
+    return <Navigate to={isCompanyAdmin(user) ? "/admin/user-management" : "/user/dashboard"} replace />;
   }
 
   const handleSubmit = async (e) => {
@@ -150,10 +150,7 @@ export default function SuperAdminLogin() {
         </AdminCard>
 
         <p className="mt-6 text-center font-mono text-[10px] text-ink-700">
-          Super Admin access only. Every action is logged.{" "}
-          <Link to="/user/login" className="text-admin-accent hover:underline">
-            User sign-in →
-          </Link>
+          Super Admin access only. Every action is logged.
         </p>
       </div>
     </div>

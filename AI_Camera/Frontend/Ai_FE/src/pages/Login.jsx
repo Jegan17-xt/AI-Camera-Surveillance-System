@@ -1,20 +1,40 @@
 import { useState } from "react";
 import { Navigate, Link, useLocation } from "react-router-dom";
-import { ShieldHalf, Mail, Lock, Eye, EyeOff, Loader2, AlertTriangle } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, Loader2, AlertTriangle } from "lucide-react";
 import GlassCard from "../components/ui/GlassCard";
 import Button from "../components/ui/Button";
 import { useAuth } from "../context/AuthContext";
 import { isSuperAdmin, isCompanyAdmin } from "../lib/permissions";
 import { routeLog, authLog } from "../debugLog";
 import { validateEmail, INVALID_INPUT_CLASS } from "../lib/validation";
-import { APP_NAME, APP_SUBTITLE } from "../constants/branding";
 
 const inputClass =
   "w-full rounded-xl glass py-2.5 pl-10 pr-4 text-sm text-ink-100 placeholder:text-ink-500 outline-none focus:border-accent-cyan/50 focus:ring-2 focus:ring-accent-cyan/20 transition";
 
+// Same public Zynez brand/logo the landing page (pages/Landing.jsx) uses
+// — deliberately NOT constants/branding.js's APP_NAME/APP_SUBTITLE
+// ("AI Sentinel" / "Surveillance OS"), which is also read by main.jsx's
+// browser-tab title and Sidebar.jsx; changing that file would change
+// those too, and this task is scoped to the Login page only. Local
+// constants here instead, matching Landing.jsx's own BRAND/LOGO_SRC
+// exactly (same bundled asset, no new logo). mixBlendMode is applied
+// inline rather than via Landing's `.zynez-landing .zx-logo` CSS rule —
+// that selector only fires inside the landing page's own root wrapper —
+// same effect (the asset's near-black ground drops out against this
+// page's identical near-black background), no CSS file changes needed.
+const BRAND = "Zynez";
+const LOGO_SRC = "/70809498-2132-47b6-8216-785890a4f833.png";
+
 export default function Login() {
   const { login, user, isAuthenticated, isLoading } = useAuth();
   const location = useLocation();
+  // Login.jsx is mounted at both /user/login and /admin/login (see the
+  // isAuthenticated redirect below) — the only things that differ
+  // between them are the heading text and which role-switch link shows
+  // below the form (User Login -> "Admin Sign In", Admin Login -> "User
+  // Sign In"); the form itself, handleSubmit, and login() are identical
+  // either way.
+  const isAdminLoginPage = location.pathname === "/admin/login";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -43,7 +63,7 @@ export default function Login() {
       return <Navigate to="/super-admin/dashboard" replace />;
     }
 
-    const home = isCompanyAdmin(user) ? "/admin/dashboard" : "/user/dashboard";
+    const home = isCompanyAdmin(user) ? "/admin/user-management" : "/user/dashboard";
     const redirectTo = location.state?.from?.pathname || home;
     routeLog(`Login.jsx: already authenticated -> REDIRECT -> ${redirectTo}`);
     return <Navigate to={redirectTo} replace />;
@@ -71,8 +91,8 @@ export default function Login() {
     // login() has already dispatched the new auth state, which
     // re-renders this component — the isAuthenticated check above then
     // redirects to the correct portal (Super Admin -> /super-admin/dashboard,
-    // Company Admin -> /admin/dashboard, User -> /user/dashboard) on that
-    // next render, keeping the session alive either way.
+    // Company Admin -> /admin/user-management, User -> /user/dashboard) on
+    // that next render, keeping the session alive either way.
     authLog("Login.jsx: handleSubmit done, waiting for re-render to redirect declaratively");
     setSubmitting(false);
   };
@@ -81,16 +101,22 @@ export default function Login() {
     <div className="app-shell flex min-h-screen items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-cyan to-accent-deep shadow-[0_0_28px_rgba(34,211,238,0.35)]">
-            <ShieldHalf size={26} className="text-base-950" strokeWidth={2.4} />
-          </div>
-          <p className="mt-4 font-display text-lg font-semibold text-white">{APP_NAME}</p>
-          <p className="font-mono text-[11px] uppercase tracking-widest text-ink-500">{APP_SUBTITLE}</p>
+          <img
+            src={LOGO_SRC}
+            alt={`${BRAND} — AI Camera Surveillance`}
+            style={{ mixBlendMode: "screen" }}
+            className="h-14 w-auto select-none object-contain"
+            draggable={false}
+          />
+          <p className="mt-4 font-display text-lg font-semibold text-white">{BRAND}</p>
+          <p className="font-mono text-[11px] uppercase tracking-widest text-ink-500">AI Camera Surveillance</p>
         </div>
 
         <GlassCard className="p-6">
           <p className="mb-1 font-mono text-xs uppercase tracking-[0.2em] text-accent-cyan/80">Access Control</p>
-          <h1 className="mb-5 font-display text-xl font-semibold text-white">Sign in to continue</h1>
+          <h1 className="mb-5 font-display text-xl font-semibold text-white">
+            {isAdminLoginPage ? "Admin Sign In" : "User Sign In"}
+          </h1>
 
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div>
@@ -168,10 +194,32 @@ export default function Login() {
         </GlassCard>
 
         <p className="mt-6 text-center font-mono text-[10px] text-ink-700">
-          Authorized personnel only. All access is logged.{" "}
-          <Link to="/super-admin/login" className="text-accent-cyan hover:underline">
-            Admin sign-in →
-          </Link>
+          Authorized personnel only. All access is logged.
+        </p>
+
+        {/* This same page is mounted at both /user/login and /admin/login
+            (see comment above on the isAuthenticated redirect) — each
+            side links to the other, reciprocally, so either role can
+            reach its own login screen from the other's. Super Admin
+            keeps its own separate entry point at /super-admin/login and
+            isn't surfaced here — a plain route Link, never an
+            auto-login or a shortcut around the real login form below. */}
+        <p className="mt-3 text-center text-xs text-ink-400">
+          {isAdminLoginPage ? (
+            <>
+              Are you a User?{" "}
+              <Link to="/user/login" className="font-semibold text-accent-cyan hover:underline">
+                User Sign In →
+              </Link>
+            </>
+          ) : (
+            <>
+              Are you an Admin?{" "}
+              <Link to="/admin/login" className="font-semibold text-accent-cyan hover:underline">
+                Admin Sign In →
+              </Link>
+            </>
+          )}
         </p>
       </div>
     </div>

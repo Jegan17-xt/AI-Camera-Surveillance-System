@@ -1204,8 +1204,26 @@ def update_camera(camera_id, customer_id, camera_name, camera_ip, username, pass
     # only happens on an explicit Edit save, not per-frame. `rtsp_url`
     # here is the REAL, in-memory-only connection string built above —
     # never the sanitized one just written to the DB.
+    #
+    # Dispatched on a background thread, not called inline: restart_
+    # camera_worker() now hot-swaps (see its own docstring) — it briefly
+    # runs the new-resolution worker alongside the old one and waits for
+    # the new one's first real frame before tearing the old one down, so
+    # this Edit Camera save would otherwise block the HTTP response for
+    # that same window (up to HOT_SWAP_FIRST_FRAME_TIMEOUT_SECONDS on a
+    # slow/failed reconnect) for no benefit to the caller — the frontend
+    # only needs the DB write confirmed, not the live worker swap. The
+    # swap itself is unaffected either way: restart_camera_worker() still
+    # runs to completion, still serialized per-camera by its own
+    # _get_restart_lock, still fully exception-isolated internally.
     if detection_currently_enabled and (not connection_unchanged or owner_user_id is not _UNSET):
-        detection_service.restart_camera_worker(camera_id, customer_id, rtsp_url, owner_user_id=effective_owner_user_id)
+        def _restart_worker_in_background():
+            try:
+                detection_service.restart_camera_worker(camera_id, customer_id, rtsp_url, owner_user_id=effective_owner_user_id)
+            except Exception as e:
+                log_exception(e, f"camera worker hot-swap (camera={camera_id})")
+
+        threading.Thread(target=_restart_worker_in_background, daemon=True).start()
 
     return get_camera(camera_id, customer_id), None
 

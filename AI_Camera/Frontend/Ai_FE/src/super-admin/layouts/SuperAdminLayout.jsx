@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import SuperAdminSidebar from "../components/SuperAdminSidebar";
 import SuperAdminNavbar from "../components/SuperAdminNavbar";
+import PushNotificationManager from "../components/PushNotificationManager";
 import { AdminBrandingProvider } from "../context/AdminBrandingContext";
 
 export default function SuperAdminLayout() {
@@ -17,6 +18,7 @@ export default function SuperAdminLayout() {
             <Outlet />
           </main>
         </div>
+        <PushNotificationManager />
       </div>
     </AdminBrandingProvider>
   );

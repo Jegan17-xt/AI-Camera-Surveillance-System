@@ -267,8 +267,9 @@ function AdvancedSettingsSection({ open, onToggle, children }) {
 }
 
 // Super Admin only — never rendered in the User Portal. The AI pipeline
-// (Backend/camera/frame_processor.py, Backend/face/unknown_manager.py)
-// reads these same four keys per customer before running recognition.
+// (Backend/camera/frame_processor.py, Backend/face/unknown_manager.py,
+// Backend/events/manager.py) reads these keys per customer before
+// running recognition / object / fire detection.
 const AI_CONFIG_FIELDS = [
   {
     key: "face_recognition_enabled",
@@ -289,6 +290,21 @@ const AI_CONFIG_FIELDS = [
     key: "unknown_alerts_enabled",
     label: "Unknown Person Alerts",
     description: "Off still saves unknown persons as usual, but raises no alert notification.",
+  },
+  {
+    key: "object_detection_enabled",
+    label: "Vehicle Detection",
+    description: "Off ignores cars/motorcycles/buses/trucks/bicycles — no bounding box, no event recorded.",
+  },
+  {
+    key: "animal_detection_enabled",
+    label: "Animal Detection",
+    description: "Off ignores common animals (dog, cat, cow, horse, sheep, bird…) — no bounding box, no event recorded.",
+  },
+  {
+    key: "fire_detection_enabled",
+    label: "Fire / Smoke Detection",
+    description: "Off never runs the optional fire/smoke model. On raises a FIRE DETECTED alert + snapshot when a fire model is installed.",
   },
 ];
 

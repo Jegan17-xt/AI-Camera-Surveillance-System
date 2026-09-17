@@ -9,6 +9,18 @@ recipient).
     Database -> DailyReportGenerator -> PDF file -> NotificationService
         -> WhatsAppProvider
 
+2026-09-02: the WhatsApp message itself also carries a dynamic header
+image (see _latest_detection_snapshot below) — the most recent
+Unknown Person / Fire / Smoke / Vehicle / Animal / Bird detection
+snapshot that actually exists for this date, read straight from
+UnknownPerson/DetectionEvent (never a stale image, never the approved
+daily_report_summary template's own static/sample image). This fixes
+the WhatsApp message showing that static image whenever the vendor's
+template has an IMAGE header rather than (or alongside) a document one
+— the PDF attachment (DocumentUrl) and the WHATSAPP_DAILY_REPORT_TEMPLATE
+env var are both completely unchanged; this only adds the previously
+always-empty ImageUrl parameter.
+
 Deliberately never imports from camera/ or face/ — every number here
 comes from tables the existing pipeline already writes, read exactly the
 way api/attendance.py, api/registered.py, and api/unknown_analytics.py
@@ -21,9 +33,10 @@ from datetime import datetime
 from sqlalchemy import select
 
 from db import get_session
-from auth.models import Camera, NotificationLog, ReportLog, UnknownPerson, to_dict
+from auth.models import Camera, DetectionEvent, NotificationLog, ReportLog, UnknownPerson, to_dict
 from api.attendance import get_attendance_by_date
-from api.notification_settings import get_notification_settings
+from api.detection_events import detection_events_folder
+from api.notification_settings import get_notification_settings, log_and_check_notifications_enabled
 from api.registered import get_registered_persons
 from api.scope import apply_owner_scope
 from api.unknown import unknown_folder
@@ -415,6 +428,84 @@ def delete_report_log(customer_id, log_id):
     return True
 
 
+# Daily Report WhatsApp dynamic image — Unknown Person / Fire / Smoke /
+# Vehicle / Animal / Bird detections -> the report message's header
+# image, same "actual captured snapshot, never a stale/template-default
+# one" rule the per-detection Unknown Person Alert and AI Detection
+# Alert already follow (notifications/service.py). A single WhatsApp
+# template message has ONE header media slot, so this picks whichever of
+# TODAY's detections (across BOTH UnknownPerson and DetectionEvent —
+# fire/smoke/vehicle/animal/bird) happened most recently, by wall-clock
+# time, to represent the whole day's report — never an old/previous
+# day's image, never a hardcoded one.
+_DETECTION_KIND_LABEL = {
+    "unknown_person": "Unknown person",
+    "FIRE_DETECTED": "Fire",
+    "SMOKE_DETECTED": "Smoke",
+    "CAR_DETECTED": "Vehicle",
+    "ANIMAL_DETECTED": "Animal",
+    "BIRD_DETECTED": "Bird",
+}
+
+
+def _latest_detection_snapshot(customer_id, date_str, owner_user_id=None):
+    """Most recent detection-with-a-saved-image today, across
+    UnknownPerson and DetectionEvent. Returns (kind, image_kind,
+    absolute_path):
+      - `kind` is one of _DETECTION_KIND_LABEL's keys, for logging/display.
+      - `image_kind` is "unknown_person" or "detection_event" — which
+        local folder/signed-URL builder notifications/providers/
+        whatsapp.py's send_template should use (they live under
+        different folders: api.unknown.unknown_folder vs
+        api.detection_events.detection_events_folder).
+    (None, None, None) if nothing today has a saved image — the caller
+    then sends the report with no dynamic image rather than inventing
+    one, same "gracefully omit" rule reports/pdf_generator.py's
+    _image_cell already applies per-row.
+
+    Every `detected_time` string filtered in here shares the SAME
+    `date_str` prefix by construction, so a plain string comparison of
+    the remaining "HH:MM:SS" correctly finds the latest one — no
+    datetime parsing needed. Read-only: this never writes to
+    UnknownPerson/DetectionEvent, never touches detection/camera logic."""
+
+    candidates = []  # (detected_time, kind, image_kind, abs_path)
+
+    with get_session() as session:
+        query = apply_owner_scope(
+            select(UnknownPerson).where(UnknownPerson.customer_id == customer_id),
+            UnknownPerson.owner_user_id, owner_user_id,
+        )
+        unknown_rows = session.scalars(query).all()
+
+    folder = unknown_folder(customer_id)
+    for u in unknown_rows:
+        detected = u.detected_time or ""
+        if detected.startswith(date_str) and u.image_path:
+            candidates.append((detected, "unknown_person", "unknown_person", os.path.join(folder, u.image_path)))
+
+    with get_session() as session:
+        query = apply_owner_scope(
+            select(DetectionEvent).where(DetectionEvent.customer_id == customer_id),
+            DetectionEvent.owner_user_id, owner_user_id,
+        )
+        event_rows = session.scalars(query).all()
+
+    events_folder = detection_events_folder(customer_id)
+    for r in event_rows:
+        detected = r.detected_time or ""
+        if detected.startswith(date_str) and r.image_path:
+            candidates.append((detected, r.event_type, "detection_event", os.path.join(events_folder, r.image_path)))
+
+    if not candidates:
+        return None, None, None
+
+    candidates.sort(key=lambda c: c[0])
+    _detected_time, kind, image_kind, abs_path = candidates[-1]
+
+    return kind, image_kind, abs_path
+
+
 def generate_and_send_daily_report(customer_id, date_str=None, force=False, target_user_id=None):
     """The Daily Report's single entry point — called by
     reports/scheduler.py on a schedule, and by the Admin's manual
@@ -500,7 +591,7 @@ def generate_and_send_daily_report(customer_id, date_str=None, force=False, targ
         # exists, same as before this feature). This is a deliberate
         # "Generated, not sent" outcome, distinct from "Skipped" (no
         # recipient) below — the two must never be confused.
-        if target_user_id is None and not settings["daily_report_enabled"]:
+        if target_user_id is None and not log_and_check_notifications_enabled(customer_id, "daily_report"):
             print(f"[DAILY REPORT] generated only (Daily Reports OFF) — customer_id={customer_id}")
             _update_report_log(log_id, status="Generated")
             return {"status": "Generated", "file_path": filename}
@@ -510,10 +601,21 @@ def generate_and_send_daily_report(customer_id, date_str=None, force=False, targ
             f"recipient={mask_recipient(recipient)} include_pdf={settings['daily_report_include_pdf']}"
         )
 
+        snapshot_kind, snapshot_image_kind, snapshot_path = _latest_detection_snapshot(
+            customer_id, date_str, owner_user_id=target_user_id
+        )
+
+        if snapshot_kind:
+            print(f"[WHATSAPP-REPORT] {_DETECTION_KIND_LABEL.get(snapshot_kind, snapshot_kind)} detected")
+            print(f"[WHATSAPP-REPORT] Snapshot path: {snapshot_path}")
+        else:
+            print("[WHATSAPP-REPORT] No detection snapshot for this date — sending report without a dynamic image.")
+
         result = notification_service.deliver_daily_report(
             recipient, file_path, data["summary"],
             customer_id=customer_id, include_pdf=settings["daily_report_include_pdf"],
             document_filename=_whatsapp_document_filename(date_str),
+            image_path=snapshot_path, image_kind=snapshot_image_kind,
         )
 
         if result.get("success"):

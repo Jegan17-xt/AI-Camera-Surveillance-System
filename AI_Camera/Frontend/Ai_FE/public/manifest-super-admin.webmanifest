@@ -1,0 +1,17 @@
+{
+  "id": "/super-admin/login",
+  "name": "Zynez Super Admin",
+  "short_name": "Zynez Super Admin",
+  "description": "Zynez Super Admin control console — companies, billing, system settings and leads.",
+  "start_url": "/super-admin/login?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#05070d",
+  "theme_color": "#05070d",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
