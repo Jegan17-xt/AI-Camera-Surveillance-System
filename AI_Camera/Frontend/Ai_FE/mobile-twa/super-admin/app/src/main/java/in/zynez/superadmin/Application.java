@@ -24,6 +24,13 @@ public class Application extends android.app.Application {
   @Override
   public void onCreate() {
       super.onCreate();
-      
+
+      // New Lead alert channel — created here (app process start) so it
+      // already exists with the right sound/importance before the very
+      // first "New Lead Received" push ever arrives; DelegationService
+      // also calls this defensively before posting one, in case this
+      // process was started some other way (e.g. woken directly for the
+      // push) without Application.onCreate() running first.
+      LeadAlertChannel.ensureCreated(this);
   }
 }
